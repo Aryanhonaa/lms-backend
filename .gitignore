@@ -1,0 +1,11 @@
+node_modules
+dist
+src/generated
+.env
+uploads/*
+!uploads/.gitkeep
+storage/*
+!storage/.gitkeep
+*.log
+npm-debug.log*
+.DS_Store
