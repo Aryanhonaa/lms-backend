@@ -287,6 +287,10 @@ export const fileService = {
     }
 
     const key = buildObjectKey(folderForPurpose(purpose, { ...scope, contentId: input.contentId }), fileName, mimeType);
+    const directEligible = (purpose === "VIDEO" || purpose === "REEL") && fileSize >= 4 * 1024 * 1024;
+    if (!directEligible) {
+      return { direct: false as const, key: null, upload: null };
+    }
     const upload = await fileStorage.signedUploadUrl(key, mimeType);
     if (!upload) {
       return { direct: false as const, key: null, upload: null };

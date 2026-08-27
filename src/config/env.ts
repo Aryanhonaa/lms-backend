@@ -11,7 +11,7 @@ function required(name: string): string {
     throw new Error(`Missing required environment variable: ${name}`);
   }
 
-  return value;
+  return value.trim();
 }
 
 function optionalNumber(name: string, fallback: number): number {

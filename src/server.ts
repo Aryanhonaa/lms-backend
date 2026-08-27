@@ -1,6 +1,7 @@
 import { createApp } from "./app";
 import { env } from "./config/env";
 import { prisma } from "./config/prisma";
+import { ensureR2BucketCors } from "./storage";
 import { logger } from "./utils/logger";
 
 const app = createApp();
@@ -9,6 +10,7 @@ const host = process.env.HOST?.trim() || "0.0.0.0";
 
 const server = app.listen(env.port, host, () => {
   logger.info(`API listening on http://${host}:${env.port}`);
+  void ensureR2BucketCors();
 });
 
 server.on("error", (error: NodeJS.ErrnoException) => {
