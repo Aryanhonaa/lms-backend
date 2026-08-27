@@ -2,12 +2,14 @@ import {
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  PutBucketCorsCommand,
   PutObjectCommand,
   S3Client,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { env } from "../config/env";
 import { ApiError } from "../utils/api-error";
+import { logger } from "../utils/logger";
 import type { FileStorage, FileStoreInput, SignedUpload, StoredFile } from "./file-storage";
 import { assertSafeStorageKey, buildObjectKey } from "./object-keys";
 
@@ -45,6 +47,46 @@ function s3(): S3Client {
     client = createClient();
   }
   return client;
+}
+
+function corsOrigins(): string[] {
+  const origins = env.corsOrigin
+    .split(",")
+    .map((item) => item.trim().replace(/\/$/, ""))
+    .filter(Boolean);
+  for (const extra of ["http://localhost:3000", "http://127.0.0.1:3000"]) {
+    if (!origins.includes(extra)) {
+      origins.push(extra);
+    }
+  }
+  return origins;
+}
+
+/** Browser PUT/GET of signed R2 URLs requires bucket CORS; missing rules surface as xhr network errors. */
+export async function ensureR2BucketCors(): Promise<void> {
+  if (!env.r2) {
+    return;
+  }
+  try {
+    await s3().send(
+      new PutBucketCorsCommand({
+        Bucket: bucket(),
+        CORSConfiguration: {
+          CORSRules: [
+            {
+              AllowedOrigins: corsOrigins(),
+              AllowedMethods: ["GET", "PUT", "HEAD"],
+              AllowedHeaders: ["*"],
+              ExposeHeaders: ["ETag", "Content-Type", "Content-Length"],
+              MaxAgeSeconds: 3600,
+            },
+          ],
+        },
+      }),
+    );
+  } catch (error) {
+    logger.warn("Could not apply R2 bucket CORS. Direct browser uploads may fail until CORS is set on the bucket.", error);
+  }
 }
 
 export const r2FileStorage: FileStorage = {
