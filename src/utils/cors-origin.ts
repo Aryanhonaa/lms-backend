@@ -25,7 +25,7 @@ export function isAllowedCorsOrigin(origin: string | undefined, configured: stri
     }
     const localHost = url.hostname === "localhost" || url.hostname === "127.0.0.1";
     const privateHost = PRIVATE_V4.test(url.hostname) || url.hostname.endsWith(".local");
-    const frontendPort = url.port === "" || url.port === "3000";
+    const frontendPort = url.port === "" || url.port === "3000" || url.port === "3001";
     return (localHost || privateHost) && frontendPort;
   } catch {
     return false;

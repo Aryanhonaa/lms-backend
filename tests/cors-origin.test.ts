@@ -8,6 +8,7 @@ describe("LAN CORS origins", () => {
     expect(isAllowedCorsOrigin(undefined, configured)).toBe(true);
     expect(isAllowedCorsOrigin("http://localhost:3000", configured)).toBe(true);
     expect(isAllowedCorsOrigin("http://192.168.1.24:3000", configured)).toBe(true);
+    expect(isAllowedCorsOrigin("http://192.168.1.24:3001", configured)).toBe(true);
     expect(isAllowedCorsOrigin("http://10.0.0.8:3000", configured)).toBe(true);
   });
 

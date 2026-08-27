@@ -67,6 +67,9 @@ export const env = {
   jwtSecret: required("JWT_SECRET"),
   corsOrigin: required("CORS_ORIGIN"),
   publicUrl: process.env.LMS_PUBLIC_URL?.replace(/\/$/, "") || "",
+  cookieSecure:
+    process.env.COOKIE_SECURE === "true" ||
+    (process.env.LMS_PUBLIC_URL ?? "").trim().toLowerCase().startsWith("https://"),
   storageProvider: storage.storageProvider,
   r2: storage.r2,
   signedUrlExpiresSeconds: optionalNumber("R2_SIGNED_URL_EXPIRES_SECONDS", 15 * 60),
