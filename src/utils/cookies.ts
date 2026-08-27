@@ -4,7 +4,7 @@ import { env, SESSION_COOKIE_NAME, SESSION_TTL_MS } from "../config/env";
 function cookieOptions(): CookieOptions {
   return {
     httpOnly: true,
-    secure: env.isProduction,
+    secure: env.cookieSecure,
     sameSite: "lax",
     path: "/",
     maxAge: SESSION_TTL_MS,
@@ -18,7 +18,7 @@ export function setSessionCookie(res: Response, token: string): void {
 export function clearSessionCookie(res: Response): void {
   res.clearCookie(SESSION_COOKIE_NAME, {
     httpOnly: true,
-    secure: env.isProduction,
+    secure: env.cookieSecure,
     sameSite: "lax",
     path: "/",
   });
