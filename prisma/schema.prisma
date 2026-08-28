@@ -548,6 +548,8 @@ model Assignment {
   maxAttempts        Int              @default(1)
   allowedFileTypes   String           @default("pdf,doc,docx,png,jpg,jpeg,zip,txt")
   maxFileSizeMb      Int              @default(25)
+  linkedItemType     String?
+  linkedItemId       String?          @db.Uuid
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
@@ -558,6 +560,7 @@ model Assignment {
   @@unique([dayId, sortOrder])
   @@index([dayId])
   @@index([status])
+  @@index([linkedItemId])
 }
 
 model Quiz {

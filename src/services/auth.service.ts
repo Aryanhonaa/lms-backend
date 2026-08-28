@@ -9,6 +9,7 @@ import { createSessionToken, hashSessionToken } from "../utils/session-token";
 import { verifyPassword } from "../utils/password";
 
 const AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
+const AVATAR_NAME = /\.(jpe?g|png|webp)$/i;
 
 function toAuthUser(user: {
   id: string;
@@ -107,7 +108,9 @@ export const authService = {
     file: Express.Multer.File,
     publicOrigin: string,
   ): Promise<AuthUser> {
-    if (!AVATAR_TYPES.has(file.mimetype)) {
+    const mimeOk = AVATAR_TYPES.has(file.mimetype);
+    const unnamedBinary = !file.mimetype || file.mimetype === "application/octet-stream";
+    if (!mimeOk && !(unnamedBinary && AVATAR_NAME.test(file.originalname))) {
       throw ApiError.badRequest("Upload a JPG, PNG, or WEBP image");
     }
     if (file.size > env.maxAvatarUploadMb * 1024 * 1024) {
@@ -126,7 +129,10 @@ export const authService = {
       publicOrigin,
     );
 
-    const updated = await userRepository.updateAvatar(userId, stored.url);
+    // Same-origin path so the Next.js /uploads rewrite can serve the file.
+    // R2 save() returns url: null; never persist that or the photo disappears.
+    const avatarUrl = `/uploads/${stored.key}`;
+    const updated = await userRepository.updateAvatar(userId, avatarUrl);
     const previousKey = storageKeyFromPublicUrl(current?.avatarUrl);
     if (previousKey && previousKey !== stored.key) {
       await fileStorage.delete(previousKey);

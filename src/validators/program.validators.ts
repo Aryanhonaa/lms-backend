@@ -156,6 +156,8 @@ export const assignmentSchema = z.object({
   maxAttempts: z.number().int().positive().max(20).optional(),
   allowedFileTypes: z.string().optional(),
   maxFileSizeMb: z.number().int().positive().max(100).optional(),
+  linkedItemType: z.enum(["LESSON", "VIDEO", "RESOURCE", "REEL"]).optional().nullable(),
+  linkedItemId: z.string().uuid().optional().nullable(),
 });
 
 const questionSchema = z.object({

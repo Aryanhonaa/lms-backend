@@ -64,6 +64,46 @@ function parseDate(value: string | Date | null | undefined): Date | null {
   return value instanceof Date ? value : new Date(value);
 }
 
+const LINKABLE_ITEM_TYPES = ["LESSON", "VIDEO", "RESOURCE", "REEL"] as const;
+type LinkableItemType = (typeof LINKABLE_ITEM_TYPES)[number];
+
+async function unlinkAssignmentsFrom(itemType: LinkableItemType, itemId: string) {
+  await prisma.assignment.updateMany({
+    where: { linkedItemType: itemType, linkedItemId: itemId },
+    data: { linkedItemType: null, linkedItemId: null },
+  });
+}
+
+async function resolveLinkedContent(
+  dayId: string,
+  linkedItemType?: string | null,
+  linkedItemId?: string | null,
+): Promise<{ linkedItemType: string | null; linkedItemId: string | null }> {
+  if (!linkedItemType && !linkedItemId) {
+    return { linkedItemType: null, linkedItemId: null };
+  }
+  if (!linkedItemType || !linkedItemId) {
+    throw ApiError.badRequest("Choose a file for this assignment, or leave it unlinked.");
+  }
+  if (!(LINKABLE_ITEM_TYPES as readonly string[]).includes(linkedItemType)) {
+    throw ApiError.badRequest("Assignments can only follow a lesson, video, document, or reel.");
+  }
+
+  const found =
+    linkedItemType === "LESSON"
+      ? await prisma.lesson.findFirst({ where: { id: linkedItemId, dayId }, select: { id: true } })
+      : linkedItemType === "VIDEO"
+        ? await prisma.video.findFirst({ where: { id: linkedItemId, dayId }, select: { id: true } })
+        : linkedItemType === "RESOURCE"
+          ? await prisma.resource.findFirst({ where: { id: linkedItemId, dayId }, select: { id: true } })
+          : await prisma.reel.findFirst({ where: { id: linkedItemId, dayId }, select: { id: true } });
+
+  if (!found) {
+    throw ApiError.badRequest("That file is not on this day.");
+  }
+  return { linkedItemType, linkedItemId };
+}
+
 function combineDateAndTime(date: string | undefined, time: string | undefined): Date | null {
   if (!date) {
     return null;
@@ -250,6 +290,7 @@ export const curriculumService = {
       throw ApiError.notFound("Lesson not found");
     }
     await programService.requireEditable(user, lesson.day.week.programId);
+    await unlinkAssignmentsFrom("LESSON", id);
     const keys = await collectStorageKeys({ lessonId: id });
     await prisma.lesson.delete({ where: { id } });
     await purgeStorageKeys(keys);
@@ -319,6 +360,7 @@ export const curriculumService = {
       throw ApiError.notFound("Video not found");
     }
     await programService.requireEditable(user, video.day.week.programId);
+    await unlinkAssignmentsFrom("VIDEO", id);
     await prisma.video.delete({ where: { id } });
     await deleteStorageObjectIfUnreferenced(video.fileKey);
     return programService.getTreeForUser(user, video.day.week.programId);
@@ -402,6 +444,7 @@ export const curriculumService = {
       throw ApiError.notFound("Resource not found");
     }
     await programService.requireEditable(user, resource.day.week.programId);
+    await unlinkAssignmentsFrom("RESOURCE", id);
     await prisma.resource.delete({ where: { id } });
     await deleteStorageObjectIfUnreferenced(resource.fileKey);
     return programService.getTreeForUser(user, resource.day.week.programId);
@@ -466,6 +509,7 @@ export const curriculumService = {
       throw ApiError.notFound("Reel not found");
     }
     await programService.requireEditable(user, reel.day.week.programId);
+    await unlinkAssignmentsFrom("REEL", id);
     await prisma.reel.delete({ where: { id } });
     await deleteStorageObjectIfUnreferenced(reel.fileKey);
     return programService.getTreeForUser(user, reel.day.week.programId);
@@ -488,6 +532,8 @@ export const curriculumService = {
       maxAttempts?: number;
       allowedFileTypes?: string;
       maxFileSizeMb?: number;
+      linkedItemType?: string | null;
+      linkedItemId?: string | null;
     },
   ) {
     const day = await curriculumRepository.day(dayId);
@@ -495,6 +541,7 @@ export const curriculumService = {
       throw ApiError.notFound("Day not found");
     }
     await programService.requireEditable(user, day.week.programId);
+    const linked = await resolveLinkedContent(dayId, input.linkedItemType, input.linkedItemId);
     const sortOrder = await curriculumRepository.nextAssignmentOrder(dayId);
     await prisma.assignment.create({
       data: {
@@ -505,6 +552,8 @@ export const curriculumService = {
         instructions: input.instructions ?? "",
         dueDate: parseDate(input.dueDate),
         maxScore: input.maxScore ?? 100,
+        linkedItemType: linked.linkedItemType,
+        linkedItemId: linked.linkedItemId,
         ...(input.status ? { status: input.status } : {}),
         ...(input.allowFileUpload !== undefined ? { allowFileUpload: input.allowFileUpload } : {}),
         ...(input.allowTextResponse !== undefined ? { allowTextResponse: input.allowTextResponse } : {}),
@@ -535,6 +584,8 @@ export const curriculumService = {
       maxAttempts: number;
       allowedFileTypes: string;
       maxFileSizeMb: number;
+      linkedItemType: string | null;
+      linkedItemId: string | null;
     }>,
   ) {
     const assignment = await curriculumRepository.assignment(id);
@@ -542,6 +593,14 @@ export const curriculumService = {
       throw ApiError.notFound("Assignment not found");
     }
     await programService.requireEditable(user, assignment.day.week.programId);
+    const linked =
+      "linkedItemType" in input || "linkedItemId" in input
+        ? await resolveLinkedContent(
+            assignment.dayId,
+            input.linkedItemType ?? null,
+            input.linkedItemId ?? null,
+          )
+        : null;
     await prisma.assignment.update({
       where: { id },
       data: {
@@ -558,6 +617,7 @@ export const curriculumService = {
         ...("maxAttempts" in input ? { maxAttempts: input.maxAttempts } : {}),
         ...("allowedFileTypes" in input ? { allowedFileTypes: input.allowedFileTypes } : {}),
         ...("maxFileSizeMb" in input ? { maxFileSizeMb: input.maxFileSizeMb } : {}),
+        ...(linked ? { linkedItemType: linked.linkedItemType, linkedItemId: linked.linkedItemId } : {}),
       },
     });
     return programService.getTreeForUser(user, assignment.day.week.programId);

@@ -213,11 +213,7 @@ async function resolveContext(userId: string, input: UsageHeartbeatInput) {
 
 async function listScopedTrainees(viewer: AuthUser, programId?: string, batchId?: string) {
   if (viewer.role === Role.TRAINEE) {
-    const self = await prisma.user.findUnique({
-      where: { id: viewer.id },
-      select: { id: true, name: true },
-    });
-    return self ? [self] : [];
+    throw ApiError.forbidden();
   }
 
   if (viewer.role === Role.TRAINER) {
@@ -282,25 +278,7 @@ async function listScopedTrainees(viewer: AuthUser, programId?: string, batchId?
 
 async function listFilterOptions(viewer: AuthUser) {
   if (viewer.role === Role.TRAINEE) {
-    const enrollments = await prisma.enrollment.findMany({
-      where: { userId: viewer.id, status: { not: EnrollmentStatus.WITHDRAWN } },
-      select: {
-        program: { select: { id: true, title: true } },
-        batch: { select: { id: true, name: true, programId: true } },
-      },
-      orderBy: { createdAt: "desc" },
-    });
-    const programs = new Map<string, string>();
-    const batches: Array<{ id: string; name: string; programId: string }> = [];
-    for (const row of enrollments) {
-      programs.set(row.program.id, row.program.title);
-      batches.push(row.batch);
-    }
-    return {
-      programs: [...programs.entries()].map(([id, title]) => ({ id, title })),
-      batches,
-      trainees: [{ id: viewer.id, name: viewer.name }],
-    };
+    throw ApiError.forbidden();
   }
 
   const programWhere =
@@ -416,6 +394,10 @@ export const appUsageService = {
     },
     now = new Date(),
   ): Promise<{ analytics: AppUsageAnalytics }> {
+    if (viewer.role === Role.TRAINEE) {
+      throw ApiError.forbidden();
+    }
+
     const periodResult = query.period === undefined || query.period === "" ? "daily" : query.period;
     if (periodResult !== "daily" && periodResult !== "weekly" && periodResult !== "monthly") {
       throw ApiError.badRequest("Invalid period");
@@ -447,10 +429,6 @@ export const appUsageService = {
       if (!isUuid(id)) {
         throw ApiError.badRequest("Invalid traineeId");
       }
-    }
-
-    if (viewer.role === Role.TRAINEE && wantedIds.some((id) => id !== viewer.id)) {
-      throw ApiError.forbidden();
     }
 
     const scoped = await listScopedTrainees(viewer, programId, batchId);
@@ -513,13 +491,13 @@ export const appUsageService = {
       analytics: {
         period,
         timezone: timeZone,
-        mode: viewer.role === Role.TRAINEE || wantedIds.length === 1 ? "individual" : "comparison",
+        mode: wantedIds.length === 1 ? "individual" : "comparison",
         range: { start: start.toISOString(), end: end.toISOString(), label },
         summary: {
           totalSeconds,
           averageSeconds: active.length > 0 ? Math.round(totalSeconds / active.length) : 0,
           activeTrainees: active.length,
-          mostActive: viewer.role === Role.TRAINEE ? null : mostActive,
+          mostActive,
         },
         buckets: buckets.map(({ key, label: bucketLabel, start: bucketStart, end: bucketEnd }) => ({
           key,

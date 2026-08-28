@@ -3,9 +3,11 @@ import { loadBackendEnv } from "../src/config/load-env";
 import { PrismaClient, Role } from "../src/generated/prisma";
 import bcrypt from "bcryptjs";
 
-loadBackendEnv();
+const databaseUrl = loadBackendEnv();
 
-const prisma = new PrismaClient();
+const prisma = new PrismaClient({
+  datasources: { db: { url: databaseUrl } },
+});
 
 const DEV_PASSWORD = "DevPass123!";
 
