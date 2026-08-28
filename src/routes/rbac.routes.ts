@@ -183,7 +183,6 @@ traineeRouter.get("/search", asyncHandler(traineeController.search));
 traineeRouter.get("/usage/config", asyncHandler(appUsageController.config));
 traineeRouter.post("/usage/heartbeat", validateBody(usageHeartbeatSchema), asyncHandler(appUsageController.heartbeat));
 traineeRouter.post("/usage/end", asyncHandler(appUsageController.end));
-traineeRouter.get("/analytics/app-usage", asyncHandler(appUsageController.analytics));
 traineeRouter.get("/enrollments", asyncHandler(learningController.listEnrollments));
 traineeRouter.get("/progress", asyncHandler(progressController.list));
 traineeRouter.get("/programs/:programId/progress", asyncHandler(progressController.getProgram));

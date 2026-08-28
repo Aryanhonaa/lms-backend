@@ -196,6 +196,10 @@ describe("authentication and RBAC", () => {
 
     const me = await request(app).get("/api/v1/auth/me").set("Cookie", cookie);
     expect(me.body.data.user.avatarUrl).toBe(response.body.data.user.avatarUrl);
+
+    const image = await request(app).get(response.body.data.user.avatarUrl as string);
+    expect(image.status).toBe(200);
+    expect(image.headers["content-type"]).toMatch(/image\//);
   });
 
   it("rejects a non-image profile picture", async () => {

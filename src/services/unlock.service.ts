@@ -309,6 +309,57 @@ function assignmentCountsForProgression(status: AssignmentSubmissionStatus): boo
   );
 }
 
+export const LINKABLE_ITEM_TYPES = ["LESSON", "VIDEO", "RESOURCE", "REEL"] as const;
+export type LinkableItemType = (typeof LINKABLE_ITEM_TYPES)[number];
+
+export function isLinkableItemType(value: string | null | undefined): value is LinkableItemType {
+  return Boolean(value && (LINKABLE_ITEM_TYPES as readonly string[]).includes(value));
+}
+
+export function dayHasLinkedAssignments(day: DayNode): boolean {
+  return day.assignments.some(
+    (assignment) => isLiveAssignment(assignment) && isLinkableItemType(assignment.linkedItemType) && assignment.linkedItemId,
+  );
+}
+
+export function liveAssignmentsForItem(
+  day: DayNode,
+  itemType: LearnableItemType,
+  itemId: string,
+): DayNode["assignments"] {
+  return day.assignments.filter(
+    (assignment) =>
+      isLiveAssignment(assignment) &&
+      assignment.linkedItemType === itemType &&
+      assignment.linkedItemId === itemId,
+  );
+}
+
+export function itemSequenceComplete(
+  day: DayNode,
+  item: RawLearnable,
+  facts: TraineeFacts,
+): boolean {
+  if (!contentCompleted(facts, item.type, item.id)) {
+    return false;
+  }
+  return liveAssignmentsForItem(day, item.type, item.id).every((assignment) =>
+    assignmentCompleteForGate(facts, assignment.id),
+  );
+}
+
+export function priorSequenceComplete(
+  day: DayNode,
+  learnable: RawLearnable[],
+  index: number,
+  facts: TraineeFacts,
+): boolean {
+  if (!dayHasLinkedAssignments(day) || index <= 0) {
+    return true;
+  }
+  return learnable.slice(0, index).every((item) => itemSequenceComplete(day, item, facts));
+}
+
 export function assignmentCompleteForGate(facts: TraineeFacts, assignmentId: string): boolean {
   const submission = facts.submissions.get(assignmentId);
   return Boolean(submission && assignmentCountsForProgression(submission.status));
@@ -465,11 +516,17 @@ export const unlockService = {
     return withStatus("AVAILABLE");
   },
 
-  contentAccess(dayAccess: AccessResult, completed: boolean): AccessResult {
+  contentAccess(dayAccess: AccessResult, completed: boolean, priorSequenceCompleteFlag = true): AccessResult {
     if (completed) {
       return withStatus("COMPLETED");
     }
-    return dayAccess.status === "LOCKED" ? dayAccess : withStatus("AVAILABLE");
+    if (dayAccess.status === "LOCKED") {
+      return dayAccess;
+    }
+    if (!priorSequenceCompleteFlag) {
+      return withStatus("LOCKED", "Finish the previous file and its assignment first.");
+    }
+    return withStatus("AVAILABLE");
   },
 
   practiceQuizAccess(
@@ -495,15 +552,25 @@ export const unlockService = {
     practicePassed: boolean,
     facts: TraineeFacts,
     assignmentId: string,
+    linked?: { fileComplete: boolean; priorComplete: boolean } | null,
   ): AccessResult {
     if (dayAccess.status === "LOCKED") {
       return dayAccess;
     }
-    if (trainingMode === "PROGRESSION" && !learnableRequiredComplete) {
-      return withStatus("LOCKED", "Complete this day's required lessons before the assignment.");
-    }
-    if (trainingMode === "PROGRESSION" && !practicePassed) {
-      return withStatus("LOCKED", "Pass this day's quiz before the assignment.");
+    if (linked) {
+      if (!linked.priorComplete) {
+        return withStatus("LOCKED", "Finish the previous file and its assignment first.");
+      }
+      if (!linked.fileComplete) {
+        return withStatus("LOCKED", "Finish this file before the assignment.");
+      }
+    } else {
+      if (trainingMode === "PROGRESSION" && !learnableRequiredComplete) {
+        return withStatus("LOCKED", "Complete this day's required lessons before the assignment.");
+      }
+      if (trainingMode === "PROGRESSION" && !practicePassed) {
+        return withStatus("LOCKED", "Pass this day's quiz before the assignment.");
+      }
     }
 
     const submission = facts.submissions.get(assignmentId);

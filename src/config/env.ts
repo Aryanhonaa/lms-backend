@@ -1,6 +1,6 @@
 import { loadBackendEnv } from "./load-env";
 
-loadBackendEnv();
+const databaseUrl = loadBackendEnv();
 
 const nodeEnv = process.env.NODE_ENV ?? "development";
 
@@ -63,7 +63,7 @@ export const env = {
   isProduction: nodeEnv === "production",
   isTest: nodeEnv === "test",
   port: optionalNumber("PORT", 5000),
-  databaseUrl: required("LMS_DATABASE_URL"),
+  databaseUrl,
   jwtSecret: required("JWT_SECRET"),
   corsOrigin: required("CORS_ORIGIN"),
   publicUrl: process.env.LMS_PUBLIC_URL?.replace(/\/$/, "") || "",

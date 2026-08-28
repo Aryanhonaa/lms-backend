@@ -7,6 +7,8 @@ import { env } from "./config/env";
 import { isAllowedCorsOrigin } from "./utils/cors-origin";
 import { errorHandler } from "./middleware/error-handler";
 import { notFoundHandler } from "./middleware/not-found";
+import { servePublicUpload } from "./middleware/serve-public-uploads";
+import { asyncHandler } from "./utils/async-handler";
 // import { apiRateLimiter } from "./middleware/rate-limit";
 import { apiRouter } from "./routes";
 
@@ -34,6 +36,7 @@ export function createApp() {
   app.use(express.json({ limit: "1mb" }));
   app.use(cookieParser());
   app.use("/uploads", express.static(path.resolve(process.cwd(), "uploads")));
+  app.use("/uploads", asyncHandler(servePublicUpload));
   app.use("/api/v1", /* apiRateLimiter, */ apiRouter);
   app.use(notFoundHandler);
   app.use(errorHandler);
