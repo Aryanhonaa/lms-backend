@@ -49,12 +49,40 @@ type QuizInput = {
   timeLimitMin?: number | null;
   maxAttempts?: number | null;
   randomized?: boolean;
+  revealMode?: "HIDDEN" | "IMMEDIATE" | "SCHEDULED";
+  revealAt?: string | Date | null;
   questions?: Array<{
     prompt: string;
     points?: number;
     options: Array<{ label: string; isCorrect: boolean }>;
   }>;
 };
+
+function quizRevealData(
+  input: QuizInput,
+  previous?: { revealMode: string; revealAt: Date | null },
+) {
+  const revealMode = input.revealMode ?? previous?.revealMode ?? "IMMEDIATE";
+  if (revealMode === "SCHEDULED" && !input.revealAt && !previous?.revealAt) {
+    throw ApiError.badRequest("Choose when answers become visible.");
+  }
+  const revealAt =
+    revealMode === "SCHEDULED"
+      ? parseDate(input.revealAt) ?? previous?.revealAt ?? null
+      : null;
+  if (revealMode === "SCHEDULED" && !revealAt) {
+    throw ApiError.badRequest("Choose when answers become visible.");
+  }
+  const scheduleChanged =
+    !previous ||
+    previous.revealMode !== revealMode ||
+    (previous.revealAt?.getTime() ?? 0) !== (revealAt?.getTime() ?? 0);
+  return {
+    revealMode: revealMode as "HIDDEN" | "IMMEDIATE" | "SCHEDULED",
+    revealAt,
+    ...(scheduleChanged ? { answersRevealedAnnouncedAt: null } : {}),
+  };
+}
 
 function parseDate(value: string | Date | null | undefined): Date | null {
   if (!value) {
@@ -721,6 +749,7 @@ export const curriculumService = {
         timeLimitMin: input.timeLimitMin,
         maxAttempts: input.maxAttempts,
         randomized: input.randomized ?? false,
+        ...quizRevealData(input),
         dayId: input.dayId,
         weekId: input.weekId,
         milestoneId: input.milestoneId,
@@ -759,6 +788,7 @@ export const curriculumService = {
         timeLimitMin: input.timeLimitMin,
         maxAttempts: input.maxAttempts,
         randomized: input.randomized,
+        ...quizRevealData(input, { revealMode: quiz.revealMode, revealAt: quiz.revealAt }),
       },
     });
     if (input.questions) {

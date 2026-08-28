@@ -2,6 +2,7 @@ import { AssignmentStatus, AssignmentSubmissionStatus } from "../generated/prism
 import { env } from "../config/env";
 import { assignmentSubmissionRepository } from "../repositories/assignment-submission.repository";
 import { contentAttachmentRepository } from "../repositories/content-attachment.repository";
+import { announcementRepository } from "../repositories/engagement.repository";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { fileStorage } from "../storage";
 import { deleteStorageObjectIfUnreferenced, publicAttachment } from "./file.service";
@@ -582,6 +583,23 @@ export const assignmentService = {
       trainerComment: input.comment ?? submission.trainerComment,
       gradedByUserId: user.id,
     });
+
+    if (nextStatus === AssignmentSubmissionStatus.CHANGES_REQUESTED) {
+      const program = submission.assignment.day.week.program;
+      const comment = (input.comment ?? "").trim();
+      const title = submission.assignment.title;
+      await announcementRepository.create({
+        title: `Changes requested: ${title}`,
+        body: comment
+          ? `Your trainer asked you to update “${title}” in ${program.title}. Open the assignment to resubmit.\n\nFeedback:\n${comment}`
+          : `Your trainer asked you to update “${title}” in ${program.title}. Open the assignment to resubmit.`,
+        audience: "TRAINEES_SELECTED",
+        programId: program.id,
+        batchId: submission.enrollment.batchId,
+        createdByUserId: user.id,
+        traineeIds: [submission.enrollment.userId],
+      });
+    }
 
     await progressService.recomputeEnrollment(submission.enrollmentId);
 

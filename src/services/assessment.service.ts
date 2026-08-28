@@ -4,7 +4,10 @@ import {
   type Question,
   type QuestionOption,
 } from "../generated/prisma";
+import { prisma } from "../config/prisma";
 import { assessmentRepository } from "../repositories/assessment.repository";
+import { announcementRepository } from "../repositories/engagement.repository";
+import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programService } from "./program.service";
 import { progressService } from "./progress.service";
 import { resolveTrainerWorkScope } from "./trainer-scope";
@@ -26,10 +29,21 @@ type AnswerInput = {
 type QuizRecord = NonNullable<Awaited<ReturnType<typeof assessmentRepository.findQuiz>>>;
 type QuizLocation = {
   programId: string | null;
-  program?: { title: string } | null;
-  week?: { programId: string; title?: string; program?: { title: string } | null } | null;
-  day?: { title?: string; week: { programId: string; title?: string; program?: { title: string } | null } } | null;
-  milestone?: { programId: string; title?: string; program?: { title: string } | null } | null;
+  program?: { title: string; createdByUserId?: string } | null;
+  week?: { programId: string; title?: string; program?: { title: string; createdByUserId?: string } | null } | null;
+  day?: {
+    title?: string;
+    week: { programId: string; title?: string; program?: { title: string; createdByUserId?: string } | null };
+  } | null;
+  milestone?: { programId: string; title?: string; program?: { title: string; createdByUserId?: string } | null } | null;
+};
+
+type RevealQuiz = {
+  id: string;
+  title: string;
+  revealMode: "HIDDEN" | "IMMEDIATE" | "SCHEDULED";
+  revealAt: Date | null;
+  answersRevealedAnnouncedAt: Date | null;
 };
 
 function shuffle<T>(items: T[]): T[] {
@@ -66,6 +80,71 @@ function programTitleFromQuiz(quiz: QuizLocation): string {
     quiz.milestone?.program?.title ??
     ""
   );
+}
+
+function programOwnerIdFromQuiz(quiz: QuizLocation): string | null {
+  return (
+    quiz.program?.createdByUserId ??
+    quiz.week?.program?.createdByUserId ??
+    quiz.day?.week.program?.createdByUserId ??
+    quiz.milestone?.program?.createdByUserId ??
+    null
+  );
+}
+
+function answersVisibleToTrainee(quiz: Pick<RevealQuiz, "revealMode" | "revealAt">, now = new Date()) {
+  if (quiz.revealMode === "HIDDEN") {
+    return false;
+  }
+  if (quiz.revealMode === "IMMEDIATE") {
+    return true;
+  }
+  return Boolean(quiz.revealAt && now.getTime() >= quiz.revealAt.getTime());
+}
+
+async function maybeAnnounceAnswersRevealed(quiz: RevealQuiz & QuizLocation) {
+  if (quiz.revealMode !== "SCHEDULED" || quiz.answersRevealedAnnouncedAt) {
+    return;
+  }
+  if (!answersVisibleToTrainee(quiz)) {
+    return;
+  }
+
+  const programId = programIdFromQuiz(quiz);
+  let createdByUserId = programOwnerIdFromQuiz(quiz);
+  let programTitle = programTitleFromQuiz(quiz);
+  if (!createdByUserId || !programTitle) {
+    const program = await prisma.program.findUnique({
+      where: { id: programId },
+      select: { createdByUserId: true, title: true },
+    });
+    createdByUserId = createdByUserId ?? program?.createdByUserId ?? null;
+    programTitle = programTitle || program?.title || "";
+  }
+  if (!createdByUserId) {
+    return;
+  }
+
+  const claimed = await prisma.quiz.updateMany({
+    where: {
+      id: quiz.id,
+      revealMode: "SCHEDULED",
+      answersRevealedAnnouncedAt: null,
+    },
+    data: { answersRevealedAnnouncedAt: new Date() },
+  });
+  if (claimed.count === 0) {
+    return;
+  }
+
+  const when = quiz.revealAt ? quiz.revealAt.toLocaleString() : "now";
+  await announcementRepository.create({
+    title: `Answers available: ${quiz.title}`,
+    body: `Correct answers for “${quiz.title}” in ${programTitle || "your program"} are now visible (${when}).`,
+    audience: "PROGRAM",
+    programId,
+    createdByUserId,
+  });
 }
 
 function parseSnapshot(value: unknown): SnapshotItem[] {
@@ -297,6 +376,7 @@ function toAttemptPayload(
     questionSnapshot: unknown;
     answers?: Array<{ questionId: string; selectedOptionIds: string[]; isCorrect: boolean; pointsAwarded: number }>;
   },
+  closed: boolean,
   revealKeys: boolean,
 ) {
   const snapshot = parseSnapshot(attempt.questionSnapshot);
@@ -307,14 +387,16 @@ function toAttemptPayload(
     startedAt: attempt.startedAt,
     deadlineAt: attempt.deadlineAt,
     submittedAt: attempt.submittedAt,
-    score: revealKeys ? toNumber(attempt.score) : null,
-    passed: revealKeys ? attempt.passed : null,
+    score: closed ? toNumber(attempt.score) : null,
+    passed: closed ? attempt.passed : null,
     passingScore: quiz.passingScore,
+    answersVisible: revealKeys,
     questions: safeQuestions(quiz, snapshot, revealKeys, attempt.answers),
   };
 }
 
 async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
+  await maybeAnnounceAnswersRevealed(quiz);
   const programId = programIdFromQuiz(quiz);
   const view = await progressService.getComputation(user, programId);
   const access = progressService.quizAccess(view, quiz.id);
@@ -342,6 +424,9 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
       timeLimitMin: quiz.timeLimitMin,
       maxAttempts: quiz.maxAttempts,
       randomized: quiz.randomized,
+      revealMode: quiz.revealMode,
+      revealAt: quiz.revealAt,
+      answersVisible: answersVisibleToTrainee(quiz),
       questionCount: quiz.questions.length,
       programId,
       programTitle: view.program.title,
@@ -394,7 +479,7 @@ export const assessmentService = {
     if (open) {
       const timedOut = await closeExpired(open, quiz);
       if (!timedOut) {
-        return { created: false, attempt: toAttemptPayload(quiz, open, false) };
+        return { created: false, attempt: toAttemptPayload(quiz, open, false, false) };
       }
     }
 
@@ -416,7 +501,7 @@ export const assessmentService = {
       questionSnapshot: buildSnapshot(quiz.questions, quiz.randomized),
     });
 
-    return { created: true, attempt: toAttemptPayload(quiz, created, false) };
+    return { created: true, attempt: toAttemptPayload(quiz, created, false, false) };
   },
 
   async getAttempt(user: AuthUser, attemptId: string) {
@@ -428,7 +513,9 @@ export const assessmentService = {
     const timedOut = await closeExpired(attempt, attempt.quiz);
     const current = timedOut ?? attempt;
     const closed = closedStatuses(current.status);
-    return { attempt: toAttemptPayload(attempt.quiz, current, closed) };
+    await maybeAnnounceAnswersRevealed(attempt.quiz);
+    const revealKeys = closed && answersVisibleToTrainee(attempt.quiz);
+    return { attempt: toAttemptPayload(attempt.quiz, current, closed, revealKeys) };
   },
 
   async submitAttempt(user: AuthUser, attemptId: string, answers: AnswerInput[]) {
@@ -453,9 +540,12 @@ export const assessmentService = {
     });
 
     await progressService.getComputation(user, programIdFromQuiz(attempt.quiz));
+    await maybeAnnounceAnswersRevealed(attempt.quiz);
+    const closed = true;
+    const revealKeys = answersVisibleToTrainee(attempt.quiz);
 
     return {
-      attempt: toAttemptPayload(attempt.quiz, { ...attempt, ...saved }, true),
+      attempt: toAttemptPayload(attempt.quiz, { ...attempt, ...saved }, closed, revealKeys),
     };
   },
 
@@ -501,7 +591,60 @@ export const assessmentService = {
       throw ApiError.badRequest("Assessment does not belong to that course");
     }
     await programService.requireTrainerOnProgram(user, programId);
+    await maybeAnnounceAnswersRevealed(quiz);
     const attempts = await assessmentRepository.findAttemptsForQuiz(quiz.id, scope.batchId);
+    const enrollments = await enrollmentRepository.findRoster(programId, scope.batchId);
+    const byEnrollment = new Map<string, typeof attempts>();
+    for (const row of attempts) {
+      const list = byEnrollment.get(row.enrollmentId) ?? [];
+      list.push(row);
+      byEnrollment.set(row.enrollmentId, list);
+    }
+
+    const roster = enrollments.map((enrollment) => {
+      const traineeAttempts = [...(byEnrollment.get(enrollment.id) ?? [])].sort(
+        (a, b) => b.attemptNumber - a.attemptNumber,
+      );
+      const latestClosed = traineeAttempts.find((row) => closedStatuses(row.status)) ?? null;
+      const latest = latestClosed ?? traineeAttempts[0] ?? null;
+      return {
+        enrollmentId: enrollment.id,
+        trainee: enrollment.user,
+        traineeId: enrollment.userId,
+        batch: enrollment.batch,
+        status: latest?.status ?? "NOT_STARTED",
+        latest: latest
+          ? {
+              id: latest.id,
+              attemptNumber: latest.attemptNumber,
+              status: latest.status,
+              score: toNumber(latest.score),
+              passed: latest.passed,
+              startedAt: latest.startedAt,
+              submittedAt: latest.submittedAt,
+              answers: latest.answers,
+            }
+          : null,
+        attempts: traineeAttempts.map((row) => ({
+          id: row.id,
+          attemptNumber: row.attemptNumber,
+          status: row.status,
+          score: toNumber(row.score),
+          passed: row.passed,
+          startedAt: row.startedAt,
+          submittedAt: row.submittedAt,
+        })),
+      };
+    });
+
+    const closedLatest = roster
+      .map((row) => row.latest)
+      .filter((row): row is NonNullable<(typeof roster)[number]["latest"]> => Boolean(row && closedStatuses(row.status)));
+    const scores = closedLatest.map((row) => row.score).filter((score): score is number => score !== null);
+    const submittedCount = closedLatest.length;
+    const inProgressCount = roster.filter((row) => row.status === AssessmentAttemptStatus.IN_PROGRESS).length;
+    const notStartedCount = roster.filter((row) => row.status === "NOT_STARTED").length;
+
     return {
       assessment: {
         id: quiz.id,
@@ -512,6 +655,8 @@ export const assessmentService = {
         timeLimitMin: quiz.timeLimitMin,
         maxAttempts: quiz.maxAttempts,
         randomized: quiz.randomized,
+        revealMode: quiz.revealMode,
+        revealAt: quiz.revealAt,
         questionCount: quiz.questions.length,
         attemptCount: attempts.length,
         programId,
@@ -528,6 +673,19 @@ export const assessmentService = {
           })),
         })),
       },
+      summary: {
+        rosterCount: roster.length,
+        submittedCount,
+        inProgressCount,
+        notStartedCount,
+        averageScore: scores.length
+          ? Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 100) / 100
+          : null,
+        passRate:
+          submittedCount === 0
+            ? null
+            : Math.round((closedLatest.filter((row) => row.passed === true).length / submittedCount) * 10000) / 100,
+      },
       attempts: attempts.map((attempt) => ({
         id: attempt.id,
         attemptNumber: attempt.attemptNumber,
@@ -541,6 +699,7 @@ export const assessmentService = {
         batch: attempt.enrollment.batch,
         answers: attempt.answers,
       })),
+      roster,
     };
   },
 };

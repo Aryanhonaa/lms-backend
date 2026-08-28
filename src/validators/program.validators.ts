@@ -173,15 +173,34 @@ const questionSchema = z.object({
     .min(2),
 });
 
-export const quizSchema = z.object({
-  title: z.string().trim().min(1),
-  description: z.string().optional(),
-  passingScore: z.number().int().min(0).max(100).optional(),
-  timeLimitMin: z.number().int().positive().optional().nullable(),
-  maxAttempts: z.number().int().positive().optional().nullable(),
-  randomized: z.boolean().optional(),
-  questions: z.array(questionSchema).optional(),
-});
+export const quizSchema = z
+  .object({
+    title: z.string().trim().min(1),
+    description: z.string().optional(),
+    passingScore: z.number().int().min(0).max(100).optional(),
+    timeLimitMin: z.number().int().positive().optional().nullable(),
+    maxAttempts: z.number().int().positive().optional().nullable(),
+    randomized: z.boolean().optional(),
+    revealMode: z.enum(["HIDDEN", "IMMEDIATE", "SCHEDULED"]).optional(),
+    revealAt: z
+      .union([
+        z.iso.datetime(),
+        z.iso.date(),
+        z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/),
+      ])
+      .optional()
+      .nullable(),
+    questions: z.array(questionSchema).optional(),
+  })
+  .superRefine((value, ctx) => {
+    if (value.revealMode === "SCHEDULED" && !value.revealAt) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Choose when answers become visible.",
+        path: ["revealAt"],
+      });
+    }
+  });
 
 export const milestoneSchema = z.object({
   title: z.string().trim().min(1),

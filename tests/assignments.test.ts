@@ -30,6 +30,7 @@ describe("assignment submissions, files, and grading", () => {
   let assignmentId = "";
   let lateAssignmentId = "";
   let resubmitAssignmentId = "";
+  let changesAssignmentId = "";
 
   beforeAll(async () => {
     const passwordHash = await hashPassword(password);
@@ -101,6 +102,18 @@ describe("assignment submissions, files, and grading", () => {
       });
     expect(resubmit.status).toBe(200);
     resubmitAssignmentId = resubmit.body.data.program.weeks[0].days[0].assignments[2].id as string;
+
+    const changes = await request(app)
+      .post(`/api/v1/trainer/days/${dayId}/assignments`)
+      .set("Cookie", trainerCookie)
+      .send({
+        title: "Needs a rewrite",
+        maxScore: 100,
+        allowResubmission: true,
+        maxAttempts: 3,
+      });
+    expect(changes.status).toBe(200);
+    changesAssignmentId = changes.body.data.program.weeks[0].days[0].assignments[3].id as string;
 
     const submitted = await request(app).post(`/api/v1/programs/${programId}/submit`).set("Cookie", trainerCookie);
     expect(submitted.status).toBe(200);
@@ -266,5 +279,43 @@ describe("assignment submissions, files, and grading", () => {
     expect(catalog.body.data.attempts.some((row: { id: string; score: number | null }) => row.id === firstId && row.score === 72)).toBe(
       true,
     );
+  });
+
+  it("notifies the trainee when a trainer requests changes", async () => {
+    const traineeCookie = await login(accounts.trainee.email);
+    const trainerCookie = await login(accounts.trainer.email);
+
+    const submitted = await request(app)
+      .post(`/api/v1/trainee/assignments/${changesAssignmentId}/submissions`)
+      .set("Cookie", traineeCookie)
+      .send({ body: "Attempt for changes", submit: true });
+    expect(submitted.status).toBe(200);
+
+    const reviewed = await request(app)
+      .post(`/api/v1/trainer/submissions/${submitted.body.data.submission.id}/review`)
+      .set("Cookie", trainerCookie)
+      .send({ status: "CHANGES_REQUESTED", comment: "Please add validation." });
+    expect(reviewed.status).toBe(200);
+    expect(reviewed.body.data.submission.status).toBe("CHANGES_REQUESTED");
+
+    const inbox = await request(app).get("/api/v1/trainee/notifications").set("Cookie", traineeCookie);
+    expect(inbox.status).toBe(200);
+    const note = (inbox.body.data.notifications as Array<{ title: string; body: string; read: boolean }>).find((row) =>
+      row.title.startsWith("Changes requested:"),
+    );
+    expect(note).toMatchObject({
+      title: "Changes requested: Needs a rewrite",
+      read: false,
+    });
+    expect(note?.body).toContain("Please add validation.");
+
+    const listed = await request(app).get("/api/v1/trainee/announcements").set("Cookie", traineeCookie);
+    const titles = (listed.body.data.announcements as Array<{ title: string }>).map((row) => row.title);
+    expect(titles).toContain("Changes requested: Needs a rewrite");
+
+    const otherCookie = await login(accounts.other.email);
+    const otherList = await request(app).get("/api/v1/trainee/announcements").set("Cookie", otherCookie);
+    const otherTitles = (otherList.body.data.announcements as Array<{ title: string }>).map((row) => row.title);
+    expect(otherTitles).not.toContain("Changes requested: Needs a rewrite");
   });
 });
