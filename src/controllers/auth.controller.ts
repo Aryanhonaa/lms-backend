@@ -41,4 +41,19 @@ export const authController = {
     const user = await authService.updateAvatar(req.user!.id, req.file, publicOrigin(req));
     sendSuccess(res, { user });
   },
+
+  async updateProfile(req: Request, res: Response): Promise<void> {
+    const { name } = req.body as { name: string };
+    const user = await authService.updateProfile(req.user!.id, name);
+    sendSuccess(res, { user });
+  },
+
+  async changePassword(req: Request, res: Response): Promise<void> {
+    const { currentPassword, newPassword } = req.body as {
+      currentPassword: string;
+      newPassword: string;
+    };
+    const user = await authService.changePassword(req.user!.id, currentPassword, newPassword);
+    sendSuccess(res, { user });
+  },
 };
