@@ -170,6 +170,12 @@ enum AnnouncementAudience {
   TRAINEES_SELECTED
 }
 
+enum QuizRevealMode {
+  HIDDEN
+  IMMEDIATE
+  SCHEDULED
+}
+
 enum CertificateStatus {
   VALID
   REVOKED
@@ -548,6 +554,8 @@ model Assignment {
   maxAttempts        Int              @default(1)
   allowedFileTypes   String           @default("pdf,doc,docx,png,jpg,jpeg,zip,txt")
   maxFileSizeMb      Int              @default(25)
+  linkedItemType     String?
+  linkedItemId       String?          @db.Uuid
   createdAt          DateTime         @default(now())
   updatedAt          DateTime         @updatedAt
 
@@ -558,24 +566,28 @@ model Assignment {
   @@unique([dayId, sortOrder])
   @@index([dayId])
   @@index([status])
+  @@index([linkedItemId])
 }
 
 model Quiz {
-  id           String   @id @default(uuid()) @db.Uuid
-  kind         QuizKind
-  title        String
-  description  String   @default("")
-  passingScore Int      @default(70)
-  timeLimitMin Int?
-  maxAttempts  Int?
-  randomized        Boolean  @default(false)
-  questionDrawCount Int?
-  dayId        String?  @db.Uuid
-  weekId       String?  @db.Uuid
-  milestoneId  String?  @unique @db.Uuid
-  programId    String?  @db.Uuid
-  createdAt    DateTime @default(now())
-  updatedAt    DateTime @updatedAt
+  id                         String         @id @default(uuid()) @db.Uuid
+  kind                       QuizKind
+  title                      String
+  description                String         @default("")
+  passingScore               Int            @default(70)
+  timeLimitMin               Int?
+  maxAttempts                Int?
+  randomized                 Boolean        @default(false)
+  questionDrawCount          Int?
+  revealMode                 QuizRevealMode @default(IMMEDIATE)
+  revealAt                   DateTime?
+  answersRevealedAnnouncedAt DateTime?
+  dayId                      String?        @db.Uuid
+  weekId                     String?        @db.Uuid
+  milestoneId                String?        @unique @db.Uuid
+  programId                  String?        @db.Uuid
+  createdAt                  DateTime       @default(now())
+  updatedAt                  DateTime       @updatedAt
 
   day       Day?                 @relation(fields: [dayId], references: [id], onDelete: Cascade)
   week      Week?                @relation(fields: [weekId], references: [id], onDelete: Cascade)

@@ -220,21 +220,17 @@ describe("app usage tracking and analytics", () => {
     expect(monthly.body.data.analytics.buckets.length).toBeGreaterThanOrEqual(4);
   });
 
-  it("lets a trainee see only their own usage", async () => {
+  it("does not let a trainee view usage analytics", async () => {
     const cookie = await login(accounts.aryan.email);
-    const response = await request(app)
+    const own = await request(app)
       .get("/api/v1/trainee/analytics/app-usage?period=daily&date=2026-08-26")
       .set("Cookie", cookie);
-    expect(response.status).toBe(200);
-    const trainees = response.body.data.analytics.trainees as Array<{ id: string; name: string }>;
-    expect(trainees).toHaveLength(1);
-    expect(trainees[0]?.name).toBe("Aryan");
-    expect(response.body.data.analytics.mode).toBe("individual");
+    expect(own.status).toBe(404);
 
     const forbidden = await request(app)
       .get(`/api/v1/trainee/analytics/app-usage?traineeId=${users.sarah.id}&date=2026-08-26`)
       .set("Cookie", cookie);
-    expect(forbidden.status).toBe(403);
+    expect(forbidden.status).toBe(404);
   });
 
   it("scopes trainer analytics to authorized enrollments and batches", async () => {

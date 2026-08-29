@@ -156,6 +156,8 @@ export const assignmentSchema = z.object({
   maxAttempts: z.number().int().positive().max(20).optional(),
   allowedFileTypes: z.string().optional(),
   maxFileSizeMb: z.number().int().positive().max(100).optional(),
+  linkedItemType: z.enum(["LESSON", "VIDEO", "RESOURCE", "REEL"]).optional().nullable(),
+  linkedItemId: z.string().uuid().optional().nullable(),
 });
 
 const questionSchema = z
@@ -192,6 +194,15 @@ export const quizSchema = z
     maxAttempts: z.number().int().positive().optional().nullable(),
     randomized: z.boolean().optional(),
     questionDrawCount: z.number().int().positive().max(200).optional().nullable(),
+    revealMode: z.enum(["HIDDEN", "IMMEDIATE", "SCHEDULED"]).optional(),
+    revealAt: z
+      .union([
+        z.iso.datetime(),
+        z.iso.date(),
+        z.string().regex(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/),
+      ])
+      .optional()
+      .nullable(),
     questions: z.array(questionSchema).optional(),
   })
   .superRefine((quiz, ctx) => {
@@ -205,6 +216,13 @@ export const quizSchema = z
         code: "custom",
         message: "Questions per attempt cannot exceed the number of questions in the bank",
         path: ["questionDrawCount"],
+      });
+    }
+    if (quiz.revealMode === "SCHEDULED" && !quiz.revealAt) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Choose when answers become visible.",
+        path: ["revealAt"],
       });
     }
   });

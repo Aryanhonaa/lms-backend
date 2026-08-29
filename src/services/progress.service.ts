@@ -21,12 +21,14 @@ import {
   attachmentMeta,
   buildFacts,
   isLiveAssignment,
+  isLinkableItemType,
   contentCompleted,
   contentCompletedAt,
   dayGatingComplete,
   itemWeight,
   itemsForDay,
   practiceQuizzesPassed,
+  priorSequenceComplete,
   quizState,
   requiredLearnableComplete,
   unlockService,
@@ -231,6 +233,9 @@ export type ProgressComputation = {
         dueDate: Date | null;
         maxScore: number;
         description?: string;
+        linkedItemType?: string | null;
+        linkedItemId?: string | null;
+        attachments?: ReturnType<typeof attachmentMeta>;
       }>;
     }>;
     quizzes: PublicLearnQuiz[];
@@ -501,10 +506,11 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
       const learnableReady = requiredLearnableComplete(learnable, facts);
       const practicePassed = practiceQuizzesPassed(day, facts);
 
-      const publicItems = learnable.map((item) => {
+      const publicItems = learnable.map((item, index) => {
         const completed = contentCompleted(facts, item.type, item.id);
         const completedAt = contentCompletedAt(facts, item.type, item.id);
-        const access = unlockService.contentAccess(dayAccess, completed);
+        const priorComplete = priorSequenceComplete(day, learnable, index, facts);
+        const access = unlockService.contentAccess(dayAccess, completed, priorComplete);
         const weight = itemWeight(item.type, item.required);
         if (item.required) {
           totalRequired += 1;
@@ -576,6 +582,17 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
         if (!isLiveAssignment(assignment)) {
           continue;
         }
+        const linkedType = isLinkableItemType(assignment.linkedItemType) ? assignment.linkedItemType : null;
+        const linkedId = assignment.linkedItemId;
+        const linkedIndex =
+          linkedType && linkedId ? learnable.findIndex((item) => item.type === linkedType && item.id === linkedId) : -1;
+        const linkedItem = linkedIndex >= 0 ? learnable[linkedIndex] : undefined;
+        const linked = linkedItem
+          ? {
+              fileComplete: contentCompleted(facts, linkedItem.type, linkedItem.id),
+              priorComplete: priorSequenceComplete(day, learnable, linkedIndex, facts),
+            }
+          : null;
         const access = unlockService.assignmentAccess(
           program.trainingMode,
           dayAccess,
@@ -583,6 +600,7 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
           practicePassed,
           facts,
           assignment.id,
+          linked,
         );
         assignmentAccess.set(assignment.id, access);
         const weight = itemWeight("ASSIGNMENT");
@@ -639,6 +657,8 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
             dueDate: access.status === "LOCKED" ? null : assignment.dueDate,
             maxScore: assignment.maxScore,
             description: access.status === "LOCKED" ? undefined : assignment.description,
+            linkedItemType: assignment.linkedItemType ?? null,
+            linkedItemId: assignment.linkedItemId ?? null,
             attachments:
               access.status === "LOCKED" || !assignment.attachments?.length
                 ? undefined
