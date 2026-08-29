@@ -49,6 +49,7 @@ type QuizInput = {
   timeLimitMin?: number | null;
   maxAttempts?: number | null;
   randomized?: boolean;
+  questionDrawCount?: number | null;
   questions?: Array<{
     prompt: string;
     points?: number;
@@ -104,9 +105,25 @@ function assertQuestions(questions: QuizInput["questions"]) {
   }
 
   for (const question of questions) {
-    if (!question.options.some((option) => option.isCorrect)) {
-      throw ApiError.badRequest("Each question needs at least one correct option");
+    if (question.options.length < 2 || question.options.length > 6) {
+      throw ApiError.badRequest("Each question needs between 2 and 6 options");
     }
+    const correct = question.options.filter((option) => option.isCorrect).length;
+    if (correct !== 1) {
+      throw ApiError.badRequest("Each question needs exactly one correct option");
+    }
+  }
+}
+
+async function assertDrawCount(
+  drawCount: number | null | undefined,
+  bankSize: number,
+) {
+  if (drawCount == null) {
+    return;
+  }
+  if (drawCount > bankSize) {
+    throw ApiError.badRequest("Questions per attempt cannot exceed the number of questions in the bank");
   }
 }
 
@@ -652,6 +669,9 @@ export const curriculumService = {
     },
   ) {
     assertQuestions(input.questions);
+    if (input.questions?.length) {
+      await assertDrawCount(input.questionDrawCount, input.questions.length);
+    }
     const quiz = await prisma.quiz.create({
       data: {
         kind: input.kind,
@@ -660,7 +680,8 @@ export const curriculumService = {
         passingScore: input.passingScore ?? 70,
         timeLimitMin: input.timeLimitMin,
         maxAttempts: input.maxAttempts,
-        randomized: input.randomized ?? false,
+        randomized: input.randomized ?? true,
+        questionDrawCount: input.questionDrawCount ?? null,
         dayId: input.dayId,
         weekId: input.weekId,
         milestoneId: input.milestoneId,
@@ -690,6 +711,10 @@ export const curriculumService = {
     }
     await programService.requireEditable(user, programId);
     assertQuestions(input.questions);
+    const bankSize = input.questions
+      ? input.questions.length
+      : await prisma.question.count({ where: { quizId } });
+    await assertDrawCount(input.questionDrawCount, bankSize);
     await prisma.quiz.update({
       where: { id: quizId },
       data: {
@@ -699,6 +724,7 @@ export const curriculumService = {
         timeLimitMin: input.timeLimitMin,
         maxAttempts: input.maxAttempts,
         randomized: input.randomized,
+        questionDrawCount: input.questionDrawCount,
       },
     });
     if (input.questions) {

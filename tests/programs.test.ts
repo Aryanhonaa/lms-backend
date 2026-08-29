@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/config/prisma";
 import { hashPassword } from "../src/utils/password";
+import { mcqOptions } from "./helpers";
 
 const app = createApp();
 const suffix = `${Date.now()}-p3`;
@@ -181,10 +182,7 @@ describe("program authoring and approval", () => {
         questions: [
           {
             prompt: "HTML stands for?",
-            options: [
-              { label: "HyperText Markup Language", isCorrect: true },
-              { label: "Hot Mail", isCorrect: false },
-            ],
+            options: mcqOptions("HyperText Markup Language", "Hot Mail", "How To Make Lasagna", "High Tech Modern Language"),
           },
         ],
       });

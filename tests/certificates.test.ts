@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/config/prisma";
 import { hashPassword } from "../src/utils/password";
-import { enrollTraineeByEmail } from "./helpers";
+import { enrollTraineeByEmail, mcqOptions } from "./helpers";
 
 const app = createApp();
 const suffix = `${Date.now()}-p10`;
@@ -88,10 +88,7 @@ async function createLessonProgram(
         questions: [
           {
             prompt: "Ready?",
-            options: [
-              { label: "Yes", isCorrect: true },
-              { label: "No", isCorrect: false },
-            ],
+            options: mcqOptions("Yes", "No", "Later", "Skip"),
           },
         ],
       });

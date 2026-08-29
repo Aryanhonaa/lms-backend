@@ -143,8 +143,10 @@ export const interventionService = {
     const progress = toNumber(enrollment.overallProgress) ?? 0;
     const progressThreshold = toNumber(enrollment.program.progressThreshold) ?? 60;
     const examThreshold = toNumber(enrollment.program.examScoreThreshold) ?? 60;
+    const completionCount = await prisma.contentCompletion.count({ where: { enrollmentId: enrollment.id } });
+    const hasStarted = completionCount > 0;
 
-    if (progress < progressThreshold) {
+    if (hasStarted && progress < progressThreshold) {
       const existing = await interventionRepository.findOpen(
         enrollment.id,
         InterventionTrigger.PROGRESS_BELOW_THRESHOLD,

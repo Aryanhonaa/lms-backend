@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/config/prisma";
 import { hashPassword } from "../src/utils/password";
-import { enrollTraineeByEmail } from "./helpers";
+import { enrollTraineeByEmail, mcqOptions } from "./helpers";
 
 const app = createApp();
 const suffix = `${Date.now()}-p7`;
@@ -42,10 +42,7 @@ function oneQuestion(prompt: string) {
   return {
     prompt,
     points: 1,
-    options: [
-      { label: "Yes", isCorrect: true },
-      { label: "No", isCorrect: false },
-    ],
+    options: mcqOptions("Yes", "No", "Maybe", "Skip"),
   };
 }
 
@@ -148,6 +145,20 @@ describe("trainer interventions and individual requirements", () => {
     const learn = await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
     expect(learn.status).toBe(200);
 
+    const beforeStart = await request(app).get("/api/v1/trainer/interventions").set("Cookie", trainerCookie);
+    expect(beforeStart.status).toBe(200);
+    const earlyProgress = beforeStart.body.data.interventions.filter(
+      (row: { trigger: string; trainee: { email: string } }) =>
+        row.trigger === "PROGRESS_BELOW_THRESHOLD" && row.trainee.email === accounts.trainee.email,
+    );
+    expect(earlyProgress).toHaveLength(0);
+
+    const lesson = learn.body.data.weeks[0].days[0].items.find((item: { type: string }) => item.type === "LESSON");
+    const completed = await request(app)
+      .post(`/api/v1/trainee/items/LESSON/${lesson.id}/complete`)
+      .set("Cookie", traineeCookie);
+    expect(completed.status).toBe(200);
+
     const firstFlags = await request(app).get("/api/v1/trainer/interventions").set("Cookie", trainerCookie);
     expect(firstFlags.status).toBe(200);
     const progressFlags = firstFlags.body.data.interventions.filter(
@@ -167,12 +178,6 @@ describe("trainer interventions and individual requirements", () => {
         row.trigger === "PROGRESS_BELOW_THRESHOLD" && row.enrollmentId === enrollmentId,
     );
     expect(stillProgress).toHaveLength(1);
-
-    const lesson = learn.body.data.weeks[0].days[0].items.find((item: { type: string }) => item.type === "LESSON");
-    const completed = await request(app)
-      .post(`/api/v1/trainee/items/LESSON/${lesson.id}/complete`)
-      .set("Cookie", traineeCookie);
-    expect(completed.status).toBe(200);
 
     await failQuiz(traineeCookie, weeklyExam.id, examQuestions);
     await failQuiz(traineeCookie, weeklyExam.id, examQuestions);

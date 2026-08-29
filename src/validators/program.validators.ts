@@ -158,28 +158,56 @@ export const assignmentSchema = z.object({
   maxFileSizeMb: z.number().int().positive().max(100).optional(),
 });
 
-const questionSchema = z.object({
-  prompt: z.string().trim().min(1),
-  points: z.number().int().positive().optional(),
-  options: z
-    .array(
-      z.object({
-        label: z.string().trim().min(1),
-        isCorrect: z.boolean(),
-      }),
-    )
-    .min(2),
-});
+const questionSchema = z
+  .object({
+    prompt: z.string().trim().min(1),
+    points: z.number().int().positive().optional(),
+    options: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1),
+          isCorrect: z.boolean(),
+        }),
+      )
+      .min(2)
+      .max(6),
+  })
+  .superRefine((question, ctx) => {
+    const correct = question.options.filter((option) => option.isCorrect).length;
+    if (correct !== 1) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Each question needs exactly one correct option",
+        path: ["options"],
+      });
+    }
+  });
 
-export const quizSchema = z.object({
-  title: z.string().trim().min(1),
-  description: z.string().optional(),
-  passingScore: z.number().int().min(0).max(100).optional(),
-  timeLimitMin: z.number().int().positive().optional().nullable(),
-  maxAttempts: z.number().int().positive().optional().nullable(),
-  randomized: z.boolean().optional(),
-  questions: z.array(questionSchema).optional(),
-});
+export const quizSchema = z
+  .object({
+    title: z.string().trim().min(1),
+    description: z.string().optional(),
+    passingScore: z.number().int().min(0).max(100).optional(),
+    timeLimitMin: z.number().int().positive().optional().nullable(),
+    maxAttempts: z.number().int().positive().optional().nullable(),
+    randomized: z.boolean().optional(),
+    questionDrawCount: z.number().int().positive().max(200).optional().nullable(),
+    questions: z.array(questionSchema).optional(),
+  })
+  .superRefine((quiz, ctx) => {
+    if (
+      quiz.questionDrawCount != null &&
+      quiz.questions != null &&
+      quiz.questions.length > 0 &&
+      quiz.questionDrawCount > quiz.questions.length
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Questions per attempt cannot exceed the number of questions in the bank",
+        path: ["questionDrawCount"],
+      });
+    }
+  });
 
 export const milestoneSchema = z.object({
   title: z.string().trim().min(1),

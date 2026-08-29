@@ -90,10 +90,28 @@ function parseSnapshot(value: unknown): SnapshotItem[] {
   });
 }
 
-function buildSnapshot(questions: Array<Question & { options: QuestionOption[] }>, randomized: boolean): SnapshotItem[] {
-  const orderedQuestions = randomized ? shuffle(questions) : [...questions].sort((a, b) => a.sortOrder - b.sortOrder);
-  return orderedQuestions.map((question) => {
-    const options = randomized
+function effectiveQuestionCount(quiz: { questions: unknown[]; questionDrawCount: number | null }): number {
+  const bank = quiz.questions.length;
+  if (quiz.questionDrawCount == null || quiz.questionDrawCount <= 0) {
+    return bank;
+  }
+  return Math.min(quiz.questionDrawCount, bank);
+}
+
+function buildSnapshot(
+  questions: Array<Question & { options: QuestionOption[] }>,
+  randomized: boolean,
+  drawCount: number | null,
+): SnapshotItem[] {
+  const drawing = drawCount != null && drawCount > 0 && drawCount < questions.length;
+  const shuffleQuestions = randomized || drawing;
+  const shuffleOptions = randomized || drawing;
+  let selected = shuffleQuestions ? shuffle(questions) : [...questions].sort((a, b) => a.sortOrder - b.sortOrder);
+  if (drawing) {
+    selected = selected.slice(0, drawCount);
+  }
+  return selected.map((question) => {
+    const options = shuffleOptions
       ? shuffle(question.options)
       : [...question.options].sort((a, b) => a.sortOrder - b.sortOrder);
     return { questionId: question.id, optionIds: options.map((option) => option.id) };
@@ -342,7 +360,9 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
       timeLimitMin: quiz.timeLimitMin,
       maxAttempts: quiz.maxAttempts,
       randomized: quiz.randomized,
-      questionCount: quiz.questions.length,
+      questionDrawCount: quiz.questionDrawCount,
+      questionCount: effectiveQuestionCount(quiz),
+      questionBankCount: quiz.questions.length,
       programId,
       programTitle: view.program.title,
       location: locationLabel(quiz),
@@ -413,7 +433,7 @@ export const assessmentService = {
       quizId: quiz.id,
       attemptNumber,
       deadlineAt,
-      questionSnapshot: buildSnapshot(quiz.questions, quiz.randomized),
+      questionSnapshot: buildSnapshot(quiz.questions, quiz.randomized, quiz.questionDrawCount),
     });
 
     return { created: true, attempt: toAttemptPayload(quiz, created, false) };
@@ -480,7 +500,12 @@ export const assessmentService = {
           timeLimitMin: quiz.timeLimitMin,
           maxAttempts: quiz.maxAttempts,
           randomized: quiz.randomized,
-          questionCount: quiz._count.questions,
+          questionDrawCount: quiz.questionDrawCount,
+          questionCount:
+            quiz.questionDrawCount != null && quiz.questionDrawCount > 0
+              ? Math.min(quiz.questionDrawCount, quiz._count.questions)
+              : quiz._count.questions,
+          questionBankCount: quiz._count.questions,
           attemptCount: attemptCounts ? (attemptCounts.get(quiz.id) ?? 0) : quiz._count.attempts,
           programId,
           programTitle: programTitleFromQuiz(quiz),
@@ -512,7 +537,9 @@ export const assessmentService = {
         timeLimitMin: quiz.timeLimitMin,
         maxAttempts: quiz.maxAttempts,
         randomized: quiz.randomized,
-        questionCount: quiz.questions.length,
+        questionDrawCount: quiz.questionDrawCount,
+        questionCount: effectiveQuestionCount(quiz),
+        questionBankCount: quiz.questions.length,
         attemptCount: attempts.length,
         programId,
         programTitle: programTitleFromQuiz(quiz),

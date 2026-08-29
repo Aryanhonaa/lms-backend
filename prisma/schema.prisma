@@ -568,7 +568,8 @@ model Quiz {
   passingScore Int      @default(70)
   timeLimitMin Int?
   maxAttempts  Int?
-  randomized   Boolean  @default(false)
+  randomized        Boolean  @default(false)
+  questionDrawCount Int?
   dayId        String?  @db.Uuid
   weekId       String?  @db.Uuid
   milestoneId  String?  @unique @db.Uuid
