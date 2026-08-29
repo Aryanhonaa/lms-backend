@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/config/prisma";
 import { hashPassword } from "../src/utils/password";
-import { enrollTraineeByEmail } from "./helpers";
+import { enrollTraineeByEmail, mcqOptions } from "./helpers";
 
 const app = createApp();
 const suffix = `${Date.now()}-reveal`;
@@ -42,10 +42,7 @@ function oneQuestion() {
     {
       prompt: "2 + 2?",
       points: 1,
-      options: [
-        { label: "4", isCorrect: true },
-        { label: "5", isCorrect: false },
-      ],
+      options: mcqOptions("4", "5", "6", "7"),
     },
   ];
 }
@@ -73,7 +70,7 @@ describe("quiz answer reveal", () => {
     await prisma.user.deleteMany({ where: { email: { in: emails } } });
   });
 
-  it("hides keys until the trainer allows them, announces scheduled reveal once, and lists the batch roster", async () => {
+  it("hides the paper from trainees, keeps trainer review, and does not announce a scheduled reveal", async () => {
     const trainerCookie = await login(accounts.trainer.email);
     const adminCookie = await login(accounts.admin.email);
     const traineeCookie = await login(accounts.trainee.email);
@@ -203,7 +200,8 @@ describe("quiz answer reveal", () => {
     expect(hiddenSubmit.body.data.attempt.answersVisible).toBe(false);
     expect(JSON.stringify(hiddenSubmit.body)).not.toContain("correctOptionIds");
     expect(hiddenSubmit.body.data.attempt.questions[0].isCorrect).toBeUndefined();
-    expect(hiddenSubmit.body.data.attempt.questions[0].options[0].isCorrect).toBeUndefined();
+    expect(hiddenSubmit.body.data.attempt.questions[0].options).toEqual([]);
+    expect(hiddenSubmit.body.data.attempt.questions[0].selectedOptionIds).toEqual([]);
 
     const pastStart = await request(app)
       .post(`/api/v1/trainee/assessments/${pastQuiz.id}/attempts`)
@@ -214,16 +212,17 @@ describe("quiz answer reveal", () => {
       .set("Cookie", traineeCookie)
       .send({ answers: correctIds(pastQuestions) });
     expect(pastSubmit.status).toBe(200);
-    expect(pastSubmit.body.data.attempt.answersVisible).toBe(true);
-    expect(pastSubmit.body.data.attempt.questions[0].isCorrect).toBe(true);
-    expect(pastSubmit.body.data.attempt.questions[0].correctOptionIds).toHaveLength(1);
+    expect(pastSubmit.body.data.attempt.answersVisible).toBe(false);
+    expect(pastSubmit.body.data.attempt.questions[0].isCorrect).toBeUndefined();
+    expect(pastSubmit.body.data.attempt.questions[0].correctOptionIds).toBeUndefined();
+    expect(pastSubmit.body.data.attempt.questions[0].options).toEqual([]);
 
     const listedOnce = await request(app).get("/api/v1/trainee/announcements").set("Cookie", traineeCookie);
     expect(listedOnce.status).toBe(200);
     const revealNotes = (
       listedOnce.body.data.announcements as Array<{ title: string; audience: string; program: { id: string } | null }>
     ).filter((row) => row.title.includes("Past reveal quiz") && row.audience === "PROGRAM");
-    expect(revealNotes).toHaveLength(1);
+    expect(revealNotes).toHaveLength(0);
 
     const catalogAgain = await request(app)
       .get(`/api/v1/trainee/assessments/${pastQuiz.id}`)
@@ -233,7 +232,7 @@ describe("quiz answer reveal", () => {
     const revealNotesAgain = (
       listedTwice.body.data.announcements as Array<{ title: string }>
     ).filter((row) => row.title.includes("Past reveal quiz"));
-    expect(revealNotesAgain).toHaveLength(1);
+    expect(revealNotesAgain).toHaveLength(0);
 
     const futureStart = await request(app)
       .post(`/api/v1/trainee/assessments/${futureQuiz.id}/attempts`)
@@ -247,6 +246,7 @@ describe("quiz answer reveal", () => {
     expect(futureSubmit.body.data.attempt.passed).toBe(true);
     expect(futureSubmit.body.data.attempt.answersVisible).toBe(false);
     expect(futureSubmit.body.data.attempt.questions[0].isCorrect).toBeUndefined();
+    expect(futureSubmit.body.data.attempt.questions[0].options).toEqual([]);
 
     const trainerPaper = await request(app)
       .get(`/api/v1/trainer/assessments/${hiddenQuiz.id}`)

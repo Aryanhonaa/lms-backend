@@ -67,6 +67,7 @@ function toFlagPayload(
     resolvedAt: flag.resolvedAt,
     trainee: person(flag.enrollment.user),
     program: { id: flag.program.id, title: flag.program.title },
+    batch: { id: flag.enrollment.batch.id, name: flag.enrollment.batch.name },
     enrollmentId: flag.enrollmentId,
     openRequirements: flag.requirements.filter((row) => row.status !== IndividualRequirementStatus.COMPLETED).length,
   };
@@ -90,6 +91,7 @@ function toRequirementPayload(
     trainee: person(row.enrollment.user),
     trainer: person(row.assignedBy),
     program: { id: row.enrollment.program.id, title: row.enrollment.program.title },
+    batch: { id: row.enrollment.batch.id, name: row.enrollment.batch.name },
     enrollmentId: row.enrollmentId,
     interventionFlagId: row.interventionFlagId,
   };

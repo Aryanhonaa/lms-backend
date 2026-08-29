@@ -92,7 +92,13 @@ function programOwnerIdFromQuiz(quiz: QuizLocation): string | null {
   );
 }
 
+/** Trainees see score only until a later per-batch answer release. */
+const TRAINEE_ANSWER_REVIEW_ENABLED = false;
+
 function answersVisibleToTrainee(quiz: Pick<RevealQuiz, "revealMode" | "revealAt">, now = new Date()) {
+  if (!TRAINEE_ANSWER_REVIEW_ENABLED) {
+    return false;
+  }
   if (quiz.revealMode === "HIDDEN") {
     return false;
   }
@@ -398,6 +404,7 @@ function toAttemptPayload(
   revealKeys: boolean,
 ) {
   const snapshot = parseSnapshot(attempt.questionSnapshot);
+  const questions = safeQuestions(quiz, snapshot, revealKeys, attempt.answers);
   return {
     id: attempt.id,
     attemptNumber: attempt.attemptNumber,
@@ -409,7 +416,16 @@ function toAttemptPayload(
     passed: closed ? attempt.passed : null,
     passingScore: quiz.passingScore,
     answersVisible: revealKeys,
-    questions: safeQuestions(quiz, snapshot, revealKeys, attempt.answers),
+    questions:
+      closed && !revealKeys
+        ? questions.map((question) => ({
+            id: question.id,
+            prompt: question.prompt,
+            points: question.points,
+            selectedOptionIds: [] as string[],
+            options: [] as Array<{ id: string; label: string }>,
+          }))
+        : questions,
   };
 }
 
@@ -637,7 +653,7 @@ export const assessmentService = {
         trainee: enrollment.user,
         traineeId: enrollment.userId,
         batch: enrollment.batch,
-        status: latest?.status ?? "NOT_STARTED",
+        status: latest ? latest.status : ("NOT_STARTED" as const),
         latest: latest
           ? {
               id: latest.id,
@@ -668,7 +684,7 @@ export const assessmentService = {
     const scores = closedLatest.map((row) => row.score).filter((score): score is number => score !== null);
     const submittedCount = closedLatest.length;
     const inProgressCount = roster.filter((row) => row.status === AssessmentAttemptStatus.IN_PROGRESS).length;
-    const notStartedCount = roster.filter((row) => row.status === "NOT_STARTED").length;
+    const notStartedCount = roster.filter((row) => row.latest === null).length;
 
     return {
       assessment: {

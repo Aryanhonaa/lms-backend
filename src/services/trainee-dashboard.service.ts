@@ -102,7 +102,12 @@ export const traineeDashboardService = {
       rangeStart: start.toISOString(),
       rangeEnd: end.toISOString(),
       statistics: {
-        enrolledPrograms: { total: enrollments.length, active: enrollments.filter((row) => row.status !== "COMPLETED").length },
+        enrolledPrograms: {
+          total: enrollments.length,
+          active: enrollments.filter((row) => row.course.outcome === "PENDING").length,
+          completed: enrollments.filter((row) => row.course.outcome === "PASSED").length,
+          failed: enrollments.filter((row) => row.course.outcome === "FAILED").length,
+        },
         overallProgress: { percent: overallProgress },
         pendingAssignments: { total: pendingAssignments.length },
         upcomingAssessments: { total: upcoming.filter((item) => item.type === "EXAM").length },
@@ -116,6 +121,7 @@ export const traineeDashboardService = {
         id: row.id,
         title: row.program.title,
         percent: row.progress.percent,
+        outcome: row.course.outcome,
         href: `/trainee/learn?programId=${row.program.id}${row.batch?.id ? `&batchId=${row.batch.id}` : ""}`,
       })),
       errors: {
@@ -261,6 +267,7 @@ async function loadLearning(user: AuthUser, programId: string, batchId?: string 
       durationWeeks: learn.program.durationWeeks,
     },
     enrollmentStatus: learn.enrollment.status,
+    course: learn.course,
     percent: learn.progress.percent,
     currentWeek: learn.currentWeek,
     currentDay: learn.currentDay,

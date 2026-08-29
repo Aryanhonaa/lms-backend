@@ -768,7 +768,7 @@ export const curriculumService = {
         passingScore: input.passingScore ?? 70,
         timeLimitMin: input.timeLimitMin,
         maxAttempts: input.maxAttempts,
-        randomized: input.randomized ?? true,
+        randomized: input.randomized ?? false,
         questionDrawCount: input.questionDrawCount ?? null,
         ...quizRevealData(input),
         dayId: input.dayId,

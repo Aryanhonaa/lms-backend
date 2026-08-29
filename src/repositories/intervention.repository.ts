@@ -9,6 +9,7 @@ const flagInclude = {
   enrollment: {
     include: {
       user: { select: { id: true, name: true, email: true } },
+      batch: { select: { id: true, name: true } },
     },
   },
   program: { select: { id: true, title: true, progressThreshold: true, examScoreThreshold: true } },

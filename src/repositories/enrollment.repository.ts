@@ -1,4 +1,4 @@
-import { EnrollmentStatus } from "../generated/prisma";
+import { CourseOutcome, EnrollmentStatus } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 
 const progressFactsInclude = {
@@ -214,6 +214,7 @@ export const enrollmentRepository = {
       currentWeekIndex: number;
       currentDayIndex: number;
       status: EnrollmentStatus;
+      courseOutcome?: CourseOutcome;
       progressSnapshot?: object;
     },
   ) {

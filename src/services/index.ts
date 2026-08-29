@@ -7,7 +7,7 @@ export { traineeDashboardService } from "./trainee-dashboard.service";
 export { programService } from "./program.service";
 export { curriculumService } from "./curriculum.service";
 export { fileService } from "./file.service";
-export { enrollmentService } from "./enrollment.service";
+export { evaluateCourseOutcome } from "./course-outcome.service";
 export { batchService } from "./batch.service";
 export { learningService } from "./learning.service";
 export { progressService } from "./progress.service";

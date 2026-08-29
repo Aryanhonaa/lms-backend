@@ -6,6 +6,7 @@ const requirementInclude = {
     include: {
       user: { select: { id: true, name: true, email: true } },
       program: { select: { id: true, title: true } },
+      batch: { select: { id: true, name: true } },
     },
   },
   assignedBy: { select: { id: true, name: true, email: true } },
