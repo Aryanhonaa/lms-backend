@@ -8,7 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/config/prisma";
 import { hashPassword } from "../src/utils/password";
-import { enrollTraineeByEmail } from "./helpers";
+import { enrollTraineeByEmail, mcqOptions } from "./helpers";
 
 const app = createApp();
 const suffix = `${Date.now()}-p9`;
@@ -107,10 +107,7 @@ describe("engagement features", () => {
         questions: [
           {
             prompt: "2 + 2?",
-            options: [
-              { label: "4", isCorrect: true },
-              { label: "5", isCorrect: false },
-            ],
+            options: mcqOptions("4", "5", "6", "7"),
           },
         ],
       });
@@ -125,10 +122,7 @@ describe("engagement features", () => {
         questions: [
           {
             prompt: "1 + 1?",
-            options: [
-              { label: "2", isCorrect: true },
-              { label: "3", isCorrect: false },
-            ],
+            options: mcqOptions("2", "3", "4", "0"),
           },
         ],
       });

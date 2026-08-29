@@ -29,6 +29,15 @@ export async function ensureTestBatch(app: TestApp, trainerCookie: string, progr
   return created.body.data.batch.id as string;
 }
 
+export function mcqOptions(correct: string, wrong1 = "Option B", wrong2 = "Option C", wrong3 = "Option D") {
+  return [
+    { label: correct, isCorrect: true },
+    { label: wrong1, isCorrect: false },
+    { label: wrong2, isCorrect: false },
+    { label: wrong3, isCorrect: false },
+  ];
+}
+
 export async function enrollTraineeByEmail(
   app: TestApp,
   trainerCookie: string,

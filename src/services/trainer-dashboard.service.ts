@@ -289,7 +289,7 @@ async function loadPrograms(programIds: string[]) {
       endDate: true,
       enrollments: {
         where: { status: { not: EnrollmentStatus.WITHDRAWN } },
-        select: { overallProgress: true },
+        select: { overallProgress: true, courseOutcome: true },
       },
     },
     orderBy: { updatedAt: "desc" },
@@ -304,6 +304,11 @@ async function loadPrograms(programIds: string[]) {
         : Math.round(
             program.enrollments.reduce((sum, row) => sum + toNumber(row.overallProgress), 0) / traineeCount,
           );
+    const outcomeCounts = {
+      inProgress: program.enrollments.filter((row) => row.courseOutcome === "PENDING").length,
+      completed: program.enrollments.filter((row) => row.courseOutcome === "PASSED").length,
+      failed: program.enrollments.filter((row) => row.courseOutcome === "FAILED").length,
+    };
     return {
       id: program.id,
       title: program.title,
@@ -312,6 +317,7 @@ async function loadPrograms(programIds: string[]) {
       durationWeeks: program.durationWeeks,
       traineeCount,
       progress,
+      outcomeCounts,
       href: `/trainer/programs/${program.id}`,
     };
   });

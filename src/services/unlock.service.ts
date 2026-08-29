@@ -374,10 +374,35 @@ export function assignmentFullyComplete(facts: TraineeFacts, assignmentId: strin
   );
 }
 
+export function quizCanRetry(maxAttempts: number | null | undefined, state: QuizAttemptState): boolean {
+  if (state.passed || state.inProgress || !state.failed) {
+    return false;
+  }
+  if (maxAttempts == null) {
+    return true;
+  }
+  return state.attemptsUsed < maxAttempts;
+}
+
+/** Unlocks the next step. Passed, or failed with no attempts left. Not a pass for credit. */
+export function quizClearsProgressionGate(
+  quiz: { id: string; maxAttempts?: number | null },
+  facts: TraineeFacts,
+): boolean {
+  const state = quizState(facts, quiz.id);
+  if (state.passed) {
+    return true;
+  }
+  if (!state.failed || state.inProgress) {
+    return false;
+  }
+  return !quizCanRetry(quiz.maxAttempts, state);
+}
+
 export function practiceQuizzesPassed(day: DayNode, facts: TraineeFacts): boolean {
   return day.quizzes
     .filter((quiz) => quiz.kind === QuizKind.PRACTICE_QUIZ)
-    .every((quiz) => quizState(facts, quiz.id).passed);
+    .every((quiz) => quizClearsProgressionGate(quiz, facts));
 }
 
 export function dayGatingComplete(day: DayNode, facts: TraineeFacts): boolean {
@@ -408,7 +433,7 @@ export function weekGatingComplete(week: WeekNode, facts: TraineeFacts): boolean
 
   return week.quizzes
     .filter((quiz) => quiz.kind === QuizKind.WEEKLY_QUIZ || quiz.kind === QuizKind.WEEKLY_EXAM)
-    .every((quiz) => quizState(facts, quiz.id).passed);
+    .every((quiz) => quizClearsProgressionGate(quiz, facts));
 }
 
 export function itemWeight(kind: TrackedKind, required = true): number {

@@ -67,6 +67,7 @@ function toFlagPayload(
     resolvedAt: flag.resolvedAt,
     trainee: person(flag.enrollment.user),
     program: { id: flag.program.id, title: flag.program.title },
+    batch: { id: flag.enrollment.batch.id, name: flag.enrollment.batch.name },
     enrollmentId: flag.enrollmentId,
     openRequirements: flag.requirements.filter((row) => row.status !== IndividualRequirementStatus.COMPLETED).length,
   };
@@ -90,6 +91,7 @@ function toRequirementPayload(
     trainee: person(row.enrollment.user),
     trainer: person(row.assignedBy),
     program: { id: row.enrollment.program.id, title: row.enrollment.program.title },
+    batch: { id: row.enrollment.batch.id, name: row.enrollment.batch.name },
     enrollmentId: row.enrollmentId,
     interventionFlagId: row.interventionFlagId,
   };
@@ -143,8 +145,10 @@ export const interventionService = {
     const progress = toNumber(enrollment.overallProgress) ?? 0;
     const progressThreshold = toNumber(enrollment.program.progressThreshold) ?? 60;
     const examThreshold = toNumber(enrollment.program.examScoreThreshold) ?? 60;
+    const completionCount = await prisma.contentCompletion.count({ where: { enrollmentId: enrollment.id } });
+    const hasStarted = completionCount > 0;
 
-    if (progress < progressThreshold) {
+    if (hasStarted && progress < progressThreshold) {
       const existing = await interventionRepository.findOpen(
         enrollment.id,
         InterventionTrigger.PROGRESS_BELOW_THRESHOLD,

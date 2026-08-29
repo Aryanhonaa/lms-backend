@@ -88,8 +88,8 @@ export const certificateEligibilityService = {
     const requirements: CertificateRequirement[] = [
       {
         key: "PROGRAM_COMPLETION",
-        label: "Program completed",
-        met: view.progress.percent >= 100,
+        label: "Course passed",
+        met: view.course.outcome === "PASSED",
       },
     ];
 

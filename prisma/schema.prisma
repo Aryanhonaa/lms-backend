@@ -45,6 +45,12 @@ enum EnrollmentStatus {
   WITHDRAWN
 }
 
+enum CourseOutcome {
+  PENDING
+  PASSED
+  FAILED
+}
+
 enum VideoSource {
   YOUTUBE
   UPLOADED
@@ -321,6 +327,7 @@ model Enrollment {
   enrolledByUserId  String?          @db.Uuid
   batchId           String           @db.Uuid
   status            EnrollmentStatus @default(ACTIVE)
+  courseOutcome     CourseOutcome    @default(PENDING)
   overallProgress   Decimal          @default(0) @db.Decimal(5, 2)
   currentWeekIndex  Int              @default(0)
   currentDayIndex   Int              @default(0)
@@ -346,6 +353,7 @@ model Enrollment {
   @@index([programId])
   @@index([userId])
   @@index([status])
+  @@index([courseOutcome])
   @@index([enrolledByUserId])
 }
 
@@ -578,6 +586,7 @@ model Quiz {
   timeLimitMin               Int?
   maxAttempts                Int?
   randomized                 Boolean        @default(false)
+  questionDrawCount          Int?
   revealMode                 QuizRevealMode @default(IMMEDIATE)
   revealAt                   DateTime?
   answersRevealedAnnouncedAt DateTime?

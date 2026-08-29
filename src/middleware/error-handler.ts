@@ -26,6 +26,10 @@ function toApiError(error: unknown): ApiError {
     if (error.code === "P2025") {
       return ApiError.notFound("Record not found");
     }
+
+    if (error.code === "P2021") {
+      return new ApiError(503, "Database schema is missing tables. Run migrations, then seed.", "DATABASE_SCHEMA");
+    }
   }
 
   if (error instanceof Prisma.PrismaClientInitializationError) {

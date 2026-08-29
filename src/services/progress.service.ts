@@ -1,4 +1,5 @@
 import {
+  CourseOutcome,
   EnrollmentStatus,
   MilestoneRequirementKind,
   ProgramStatus,
@@ -8,6 +9,7 @@ import {
 } from "../generated/prisma";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programRepository } from "../repositories/program.repository";
+import { evaluateCourseOutcome, type CourseOutcomeResult } from "./course-outcome.service";
 import { enrollmentService } from "./enrollment.service";
 import { interventionService } from "./intervention.service";
 import { achievementService } from "./achievement.service";
@@ -29,6 +31,8 @@ import {
   itemsForDay,
   practiceQuizzesPassed,
   priorSequenceComplete,
+  quizClearsProgressionGate,
+  quizCanRetry,
   quizState,
   requiredLearnableComplete,
   unlockService,
@@ -81,6 +85,11 @@ export type PublicLearnQuiz = {
   kind: string;
   status: ProgressStatus;
   reason: string | null;
+  canRetry?: boolean;
+  score?: number | null;
+  passingScore?: number;
+  attemptsUsed?: number;
+  maxAttempts?: number | null;
 };
 
 export type ProgressActivity = {
@@ -116,6 +125,11 @@ export type MilestoneProgress = {
     status: ProgressStatus;
     reason: string | null;
     available: boolean;
+    canRetry?: boolean;
+    score?: number | null;
+    passingScore?: number;
+    attemptsUsed?: number;
+    maxAttempts?: number | null;
   } | null;
 };
 
@@ -133,6 +147,11 @@ export type FinalExamEligibility = {
   reason: string | null;
   reasons: string[];
   requirements: EligibilityRequirement[];
+  canRetry: boolean;
+  score: number | null;
+  passingScore: number | null;
+  attemptsUsed: number;
+  maxAttempts: number | null;
 };
 
 export type TrackedProgressItem = {
@@ -172,6 +191,9 @@ type ProgressSnapshot = {
   currentMilestone: { id: string; title: string } | null;
   programUpdatedAt: string;
   computedAt: string;
+  courseOutcome: CourseOutcomeResult["outcome"];
+  courseStatus: CourseOutcomeResult["courseStatus"];
+  failedAssessments: CourseOutcomeResult["failedAssessments"];
 };
 
 export type ProgressComputation = {
@@ -182,6 +204,7 @@ export type ProgressComputation = {
     currentWeekIndex: number;
     currentDayIndex: number;
   };
+  course: CourseOutcomeResult;
   program: {
     id: string;
     title: string;
@@ -341,13 +364,23 @@ function toLearnPathActivity(activity: ProgressActivity | null): LearnPathActivi
   };
 }
 
-function toPublicQuiz(quiz: { id: string; title: string; kind: string }, access: AccessResult): PublicLearnQuiz {
+function toPublicQuiz(
+  quiz: { id: string; title: string; kind: string; maxAttempts?: number | null; passingScore: number },
+  access: AccessResult,
+  facts: TraineeFacts,
+): PublicLearnQuiz {
+  const state = quizState(facts, quiz.id);
   return {
     id: quiz.id,
     title: quiz.title,
     kind: quiz.kind,
     status: access.status,
     reason: access.status === "LOCKED" ? access.reason : null,
+    canRetry: quizCanRetry(quiz.maxAttempts, state),
+    score: state.bestScore,
+    passingScore: quiz.passingScore,
+    attemptsUsed: state.attemptsUsed,
+    maxAttempts: quiz.maxAttempts ?? null,
   };
 }
 
@@ -355,6 +388,7 @@ function considerActivity(
   access: AccessResult,
   activity: ProgressActivity,
   current: { next: ProgressActivity | null; current: ProgressActivity | null },
+  canRetry = false,
 ) {
   if (access.status === "LOCKED" || access.status === "COMPLETED" || access.status === "PASSED") {
     return;
@@ -362,7 +396,11 @@ function considerActivity(
   if (!current.current) {
     current.current = activity;
   }
-  if (!current.next && (access.status === "AVAILABLE" || access.status === "IN_PROGRESS" || access.status === "FAILED")) {
+  const isNext =
+    access.status === "AVAILABLE" ||
+    access.status === "IN_PROGRESS" ||
+    (access.status === "FAILED" && canRetry);
+  if (!current.next && isNext) {
     current.next = activity;
   }
 }
@@ -561,21 +599,27 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
         quizAccess.set(quiz.id, access);
         const state = quizState(facts, quiz.id);
         const weight = itemWeight(quiz.kind as TrackedKind);
+        const contentEarned = quizClearsProgressionGate(quiz, facts) ? weight : 0;
         weekTotals.weight += weight;
-        weekTotals.earned += state.passed ? weight : 0;
+        weekTotals.earned += contentEarned;
         trackItem(items, totals, {
           kind: quiz.kind as TrackedKind,
           id: quiz.id,
           title: quiz.title,
           access,
           weight,
-          earnedWeight: state.passed ? weight : 0,
+          earnedWeight: contentEarned,
           score: state.bestScore,
           completedAt: state.lastSubmittedAt?.toISOString() ?? null,
           weekTitle: week.title,
           dayTitle: day.title,
         });
-        considerActivity(access, activityFrom(quiz.kind as TrackedKind, quiz.id, quiz.title, week.title, day.title), activities);
+        considerActivity(
+          access,
+          activityFrom(quiz.kind as TrackedKind, quiz.id, quiz.title, week.title, day.title),
+          activities,
+          quizCanRetry(quiz.maxAttempts, state),
+        );
       }
 
       for (const assignment of day.assignments) {
@@ -641,6 +685,7 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
               available: false,
               reason: "This quiz is locked.",
             },
+            facts,
           ),
         ),
         assignments: day.assignments.filter(isLiveAssignment).map((assignment) => {
@@ -680,21 +725,27 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
       quizAccess.set(quiz.id, access);
       const state = quizState(facts, quiz.id);
       const weight = itemWeight(quiz.kind as TrackedKind);
+      const contentEarned = quizClearsProgressionGate(quiz, facts) ? weight : 0;
       weekTotals.weight += weight;
-      weekTotals.earned += state.passed ? weight : 0;
+      weekTotals.earned += contentEarned;
       trackItem(items, totals, {
         kind: quiz.kind as TrackedKind,
         id: quiz.id,
         title: quiz.title,
         access,
         weight,
-        earnedWeight: state.passed ? weight : 0,
+        earnedWeight: contentEarned,
         score: state.bestScore,
         completedAt: state.lastSubmittedAt?.toISOString() ?? null,
         weekTitle: week.title,
         dayTitle: null,
       });
-      considerActivity(access, activityFrom(quiz.kind as TrackedKind, quiz.id, quiz.title, week.title, null), activities);
+      considerActivity(
+        access,
+        activityFrom(quiz.kind as TrackedKind, quiz.id, quiz.title, week.title, null),
+        activities,
+        quizCanRetry(quiz.maxAttempts, state),
+      );
     }
 
     const gatingComplete = weekGatingComplete(week, facts);
@@ -721,6 +772,7 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
             available: false,
             reason: "This quiz is locked.",
           },
+          facts,
         ),
       ),
     };
@@ -747,13 +799,14 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
       quizAccess.set(milestone.exam.id, examAccess);
       const state = quizState(facts, milestone.exam.id);
       const weight = itemWeight("MILESTONE_EXAM");
+      const contentEarned = quizClearsProgressionGate(milestone.exam, facts) ? weight : 0;
       trackItem(items, totals, {
         kind: "MILESTONE_EXAM",
         id: milestone.exam.id,
         title: milestone.exam.title,
         access: examAccess,
         weight,
-        earnedWeight: state.passed ? weight : 0,
+        earnedWeight: contentEarned,
         score: state.bestScore,
         completedAt: state.lastSubmittedAt?.toISOString() ?? null,
         weekTitle: milestone.title,
@@ -763,6 +816,7 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
         examAccess,
         activityFrom("MILESTONE_EXAM", milestone.exam.id, milestone.exam.title, milestone.title, null),
         activities,
+        quizCanRetry(milestone.exam.maxAttempts, state),
       );
     }
 
@@ -782,6 +836,11 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
             status: examAccess.status,
             reason: examAccess.reason,
             available: examAccess.available,
+            canRetry: quizCanRetry(milestone.exam.maxAttempts, quizState(facts, milestone.exam.id)),
+            score: quizState(facts, milestone.exam.id).bestScore,
+            passingScore: milestone.exam.passingScore,
+            attemptsUsed: quizState(facts, milestone.exam.id).attemptsUsed,
+            maxAttempts: milestone.exam.maxAttempts ?? null,
           }
         : null,
     };
@@ -844,19 +903,25 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
     quizAccess.set(finalQuiz.id, finalAccess);
     const state = quizState(facts, finalQuiz.id);
     const weight = itemWeight("FINAL_EXAM");
+    const contentEarned = quizClearsProgressionGate(finalQuiz, facts) ? weight : 0;
     trackItem(items, totals, {
       kind: "FINAL_EXAM",
       id: finalQuiz.id,
       title: finalQuiz.title,
       access: finalAccess,
       weight,
-      earnedWeight: state.passed ? weight : 0,
+      earnedWeight: contentEarned,
       score: state.bestScore,
       completedAt: state.lastSubmittedAt?.toISOString() ?? null,
       weekTitle: "Final exam",
       dayTitle: null,
     });
-    considerActivity(finalAccess, activityFrom("FINAL_EXAM", finalQuiz.id, finalQuiz.title, "Final exam", null), activities);
+    considerActivity(
+      finalAccess,
+      activityFrom("FINAL_EXAM", finalQuiz.id, finalQuiz.title, "Final exam", null),
+      activities,
+      quizCanRetry(finalQuiz.maxAttempts, state),
+    );
   }
 
   if (!foundCurrent && program.weeks.length > 0) {
@@ -866,6 +931,7 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
   }
 
   const percent = roundPercent(totals.earned, totals.weight);
+  const course = evaluateCourseOutcome(program, facts, weekCompleteByOrder);
   const currentWeek = weeks.find((week) => week.sortOrder === currentWeekIndex) ?? weeks[0] ?? null;
   const currentDay =
     currentWeek?.days.find((day) => day.sortOrder === currentDayIndex) ?? currentWeek?.days[0] ?? null;
@@ -877,11 +943,12 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
   return {
     enrollment: {
       id: enrollmentId,
-      status: percent >= 100 ? EnrollmentStatus.COMPLETED : EnrollmentStatus.ACTIVE,
+      status: course.outcome === "PASSED" ? EnrollmentStatus.COMPLETED : EnrollmentStatus.ACTIVE,
       overallProgress: percent,
       currentWeekIndex,
       currentDayIndex,
     },
+    course,
     program: {
       id: program.id,
       title: program.title,
@@ -924,6 +991,11 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
       reason: finalAccess.reason,
       reasons,
       requirements: eligibilityRequirements,
+      canRetry: finalQuiz ? quizCanRetry(finalQuiz.maxAttempts, quizState(facts, finalQuiz.id)) : false,
+      score: finalQuiz ? quizState(facts, finalQuiz.id).bestScore : null,
+      passingScore: finalQuiz?.passingScore ?? null,
+      attemptsUsed: finalQuiz ? quizState(facts, finalQuiz.id).attemptsUsed : 0,
+      maxAttempts: finalQuiz?.maxAttempts ?? null,
     },
     quizAccess,
     assignmentAccess,
@@ -947,6 +1019,9 @@ function toSnapshot(view: ProgressComputation): ProgressSnapshot {
     currentMilestone: view.currentMilestone,
     programUpdatedAt: view.program.updatedAt.toISOString(),
     computedAt: new Date().toISOString(),
+    courseOutcome: view.course.outcome,
+    courseStatus: view.course.courseStatus,
+    failedAssessments: view.course.failedAssessments,
   };
 }
 
@@ -956,6 +1031,9 @@ function parseSnapshot(value: Prisma.JsonValue | null | undefined): ProgressSnap
   }
   const row = value as Partial<ProgressSnapshot>;
   if (typeof row.percent !== "number" || typeof row.programUpdatedAt !== "string") {
+    return null;
+  }
+  if (row.courseOutcome !== "PENDING" && row.courseOutcome !== "PASSED" && row.courseOutcome !== "FAILED") {
     return null;
   }
   return row as ProgressSnapshot;
@@ -977,6 +1055,7 @@ function toLearnView(view: ProgressComputation) {
     currentWeek: view.currentWeek,
     currentDay: view.currentDay,
     nextActivity: toLearnPathActivity(view.nextActivity),
+    course: view.course,
     progress: {
       completedRequired: view.progress.completedRequired,
       totalRequired: view.progress.totalRequired,
@@ -995,13 +1074,38 @@ function toLearnView(view: ProgressComputation) {
       days: week.days,
       quizzes: week.quizzes,
     })),
+    milestones: view.milestones.map((milestone) => ({
+      id: milestone.id,
+      title: milestone.title,
+      afterWeekIndex: milestone.afterWeekIndex,
+      exam: milestone.exam
+        ? {
+            id: milestone.exam.id,
+            title: milestone.exam.title,
+            kind: "MILESTONE_EXAM",
+            status: milestone.exam.status,
+            reason: milestone.exam.reason,
+            canRetry: milestone.exam.canRetry,
+            score: milestone.exam.score,
+            passingScore: milestone.exam.passingScore,
+            attemptsUsed: milestone.exam.attemptsUsed,
+            maxAttempts: milestone.exam.maxAttempts,
+          }
+        : null,
+    })),
     finalExam:
       view.finalExam.configured && view.finalExam.examId
         ? {
             id: view.finalExam.examId,
             title: view.finalExam.title ?? "Final exam",
+            kind: "FINAL_EXAM",
             status: view.finalExam.status,
             reason: view.finalExam.reason,
+            canRetry: view.finalExam.canRetry,
+            score: view.finalExam.score,
+            passingScore: view.finalExam.passingScore ?? undefined,
+            attemptsUsed: view.finalExam.attemptsUsed,
+            maxAttempts: view.finalExam.maxAttempts,
           }
         : null,
   };
@@ -1031,6 +1135,7 @@ function toProgressView(view: ProgressComputation) {
     currentDay: view.currentDay,
     currentActivity: view.currentActivity,
     nextActivity: view.nextActivity,
+    course: view.course,
     weekProgress: view.weeks.map((week) => ({
       id: week.id,
       sortOrder: week.sortOrder,
@@ -1058,7 +1163,7 @@ function summaryFromSnapshot(
 ) {
   return {
     id: enrollment.id,
-    status: snapshot.percent >= 100 ? EnrollmentStatus.COMPLETED : EnrollmentStatus.ACTIVE,
+    status: snapshot.courseOutcome === "PASSED" ? EnrollmentStatus.COMPLETED : EnrollmentStatus.ACTIVE,
     overallProgress: snapshot.percent,
     currentWeekIndex: snapshot.currentWeekIndex,
     currentDayIndex: snapshot.currentDayIndex,
@@ -1080,6 +1185,11 @@ function summaryFromSnapshot(
       ? { id: "", title: snapshot.currentDayTitle, sortOrder: snapshot.currentDayIndex, status: "AVAILABLE" as const }
       : null,
     nextActivity: toLearnPathActivity(snapshot.nextActivity),
+    course: {
+      outcome: snapshot.courseOutcome,
+      courseStatus: snapshot.courseStatus,
+      failedAssessments: snapshot.failedAssessments ?? [],
+    },
     progress: {
       completedRequired: snapshot.completedItems,
       totalRequired: snapshot.completedItems + snapshot.remainingItems,
@@ -1101,7 +1211,8 @@ async function persist(enrollmentId: string, view: ProgressComputation) {
     overallProgress: view.progress.percent,
     currentWeekIndex: view.enrollment.currentWeekIndex,
     currentDayIndex: view.enrollment.currentDayIndex,
-    status: view.progress.percent >= 100 ? EnrollmentStatus.COMPLETED : EnrollmentStatus.ACTIVE,
+    status: view.enrollment.status,
+    courseOutcome: view.course.outcome as CourseOutcome,
     progressSnapshot: toSnapshot(view),
   });
   await interventionService.evaluateEnrollment(enrollmentId);
@@ -1251,6 +1362,7 @@ export const progressService = {
         currentWeek: view.currentWeek,
         currentDay: view.currentDay,
         nextActivity: toLearnPathActivity(view.nextActivity),
+        course: view.course,
         progress: {
           completedRequired: view.progress.completedRequired,
           totalRequired: view.progress.totalRequired,

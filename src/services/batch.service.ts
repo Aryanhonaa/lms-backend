@@ -179,20 +179,10 @@ export const batchService = {
 
   async listTrainees(user: AuthUser, batchId: string) {
     const batch = await requireBatchForTrainer(user, batchId);
-    const rows = await enrollmentRepository.findFactsByProgram(batch.programId, batch.id);
+    const roster = await enrollmentService.buildRoster(batch.programId, batch.id);
     return {
       batch: toBatchPayload(batch),
-      trainees: rows.map((row) => ({
-        enrollmentId: row.id,
-        status: row.status,
-        progress: Number(row.overallProgress),
-        enrolledAt: row.createdAt.toISOString(),
-        enrolledBy: row.enrolledBy
-          ? { id: row.enrolledBy.id, name: row.enrolledBy.name, email: row.enrolledBy.email }
-          : null,
-        trainee: { id: row.user.id, name: row.user.name, email: row.user.email },
-        batch: row.batch,
-      })),
+      ...roster,
     };
   },
 

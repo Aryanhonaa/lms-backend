@@ -21,6 +21,7 @@ import {
 import { certificateController } from "../controllers/certificate.controller";
 import { appUsageController } from "../controllers/app-usage.controller";
 import { batchController } from "../controllers/batch.controller";
+import { enrollmentController } from "../controllers/enrollment.controller";
 import { requireAuth } from "../middleware/require-auth";
 import { requireRole } from "../middleware/require-role";
 import { validateBody } from "../middleware/validate-body";
@@ -138,6 +139,7 @@ trainerRouter.patch(
   asyncHandler(interventionController.updateFlag),
 );
 trainerRouter.get("/enrollments", asyncHandler(interventionController.listEnrollments));
+trainerRouter.get("/enrollments/:enrollmentId/progress", asyncHandler(enrollmentController.getEnrollmentProgress));
 trainerRouter.get("/requirements", asyncHandler(interventionController.listRequirements));
 trainerRouter.get("/requirements/:id", asyncHandler(interventionController.getRequirement));
 trainerRouter.post(

@@ -160,18 +160,30 @@ export const assignmentSchema = z.object({
   linkedItemId: z.string().uuid().optional().nullable(),
 });
 
-const questionSchema = z.object({
-  prompt: z.string().trim().min(1),
-  points: z.number().int().positive().optional(),
-  options: z
-    .array(
-      z.object({
-        label: z.string().trim().min(1),
-        isCorrect: z.boolean(),
-      }),
-    )
-    .min(2),
-});
+const questionSchema = z
+  .object({
+    prompt: z.string().trim().min(1),
+    points: z.number().int().positive().optional(),
+    options: z
+      .array(
+        z.object({
+          label: z.string().trim().min(1),
+          isCorrect: z.boolean(),
+        }),
+      )
+      .min(2)
+      .max(6),
+  })
+  .superRefine((question, ctx) => {
+    const correct = question.options.filter((option) => option.isCorrect).length;
+    if (correct !== 1) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Each question needs exactly one correct option",
+        path: ["options"],
+      });
+    }
+  });
 
 export const quizSchema = z
   .object({
@@ -181,6 +193,7 @@ export const quizSchema = z
     timeLimitMin: z.number().int().positive().optional().nullable(),
     maxAttempts: z.number().int().positive().optional().nullable(),
     randomized: z.boolean().optional(),
+    questionDrawCount: z.number().int().positive().max(200).optional().nullable(),
     revealMode: z.enum(["HIDDEN", "IMMEDIATE", "SCHEDULED"]).optional(),
     revealAt: z
       .union([
@@ -192,8 +205,20 @@ export const quizSchema = z
       .nullable(),
     questions: z.array(questionSchema).optional(),
   })
-  .superRefine((value, ctx) => {
-    if (value.revealMode === "SCHEDULED" && !value.revealAt) {
+  .superRefine((quiz, ctx) => {
+    if (
+      quiz.questionDrawCount != null &&
+      quiz.questions != null &&
+      quiz.questions.length > 0 &&
+      quiz.questionDrawCount > quiz.questions.length
+    ) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Questions per attempt cannot exceed the number of questions in the bank",
+        path: ["questionDrawCount"],
+      });
+    }
+    if (quiz.revealMode === "SCHEDULED" && !quiz.revealAt) {
       ctx.addIssue({
         code: "custom",
         message: "Choose when answers become visible.",

@@ -113,6 +113,22 @@ export const userRepository = {
     });
   },
 
+  updateName(userId: string, name: string) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { name },
+      select: userPublicSelect,
+    });
+  },
+
+  updatePasswordHash(userId: string, passwordHash: string) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: { passwordHash },
+      select: userPublicSelect,
+    });
+  },
+
   countByRole(role: Role) {
     return prisma.user.count({ where: { role } });
   },

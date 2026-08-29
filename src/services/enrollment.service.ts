@@ -1,8 +1,10 @@
 import { EnrollmentStatus, Prisma, ProgramStatus, Role } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
+import { programRepository } from "../repositories/program.repository";
 import { userRepository } from "../repositories/user.repository";
 import { programService } from "./program.service";
+import { traineeRosterCounts, type TraineeRosterRow } from "./trainee-roster";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
 
@@ -65,21 +67,57 @@ export const enrollmentService = {
     };
   },
 
-  async listProgramTrainees(user: AuthUser, programId: string) {
-    await programService.requireTrainerOnProgram(user, programId);
-    const rows = await enrollmentRepository.findFactsByProgram(programId);
-    return {
-      trainees: rows.map((row) => ({
+  async buildRoster(programId: string, batchId?: string) {
+    const program = await programRepository.findTreeById(programId);
+    if (!program) {
+      throw ApiError.notFound("Program not found");
+    }
+    const { progressService } = await import("./progress.service");
+    const rows = await enrollmentRepository.findFactsByProgram(programId, batchId);
+    const trainees: TraineeRosterRow[] = rows.map((row) => {
+      const view = progressService.compute(program, row.id, progressService.factsFromEnrollment(row));
+      return {
         enrollmentId: row.id,
-        status: row.status,
-        progress: Number(row.overallProgress),
+        status: view.enrollment.status,
+        progress: view.progress.percent,
+        courseOutcome: view.course.outcome,
+        courseStatus: view.course.courseStatus,
+        failedAssessments: view.course.failedAssessments,
+        lastActivityAt: view.course.lastActivityAt,
+        finishedAt: view.course.finishedAt,
         enrolledAt: row.createdAt.toISOString(),
         enrolledBy: row.enrolledBy
           ? { id: row.enrolledBy.id, name: row.enrolledBy.name, email: row.enrolledBy.email }
           : null,
         trainee: { id: row.user.id, name: row.user.name, email: row.user.email },
-        batch: row.batch,
-      })),
+        batch: row.batch ? { id: row.batch.id, name: row.batch.name } : null,
+      };
+    });
+    return { trainees, counts: traineeRosterCounts(trainees) };
+  },
+
+  async listProgramTrainees(user: AuthUser, programId: string) {
+    await programService.requireTrainerOnProgram(user, programId);
+    return this.buildRoster(programId);
+  },
+
+  async getEnrollmentProgress(user: AuthUser, enrollmentId: string) {
+    const { progressService } = await import("./progress.service");
+    const enrollment = await enrollmentRepository.findFactsById(enrollmentId);
+    if (!enrollment) {
+      throw ApiError.notFound("Enrollment not found");
+    }
+    const progress = await progressService.getProgressViewForEnrollment(user, enrollmentId);
+    const trainee = await userRepository.findPublicById(enrollment.userId);
+    if (!trainee) {
+      throw ApiError.notFound("Trainee not found");
+    }
+    return {
+      enrollmentId: enrollment.id,
+      enrolledAt: enrollment.createdAt.toISOString(),
+      trainee: { id: trainee.id, name: trainee.name, email: trainee.email },
+      batch: enrollment.batch ? { id: enrollment.batch.id, name: enrollment.batch.name } : null,
+      progress,
     };
   },
 

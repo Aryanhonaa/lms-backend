@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApp } from "../src/app";
 import { prisma } from "../src/config/prisma";
 import { hashPassword } from "../src/utils/password";
-import { enrollTraineeByEmail } from "./helpers";
+import { enrollTraineeByEmail, mcqOptions } from "./helpers";
 
 const app = createApp();
 const suffix = `${Date.now()}-p5`;
@@ -120,18 +120,12 @@ describe("assessments and assignments", () => {
           {
             prompt: "2 + 2?",
             points: 1,
-            options: [
-              { label: "4", isCorrect: true },
-              { label: "5", isCorrect: false },
-            ],
+            options: mcqOptions("4", "5", "6", "7"),
           },
           {
             prompt: "3 + 1?",
             points: 1,
-            options: [
-              { label: "4", isCorrect: true },
-              { label: "2", isCorrect: false },
-            ],
+            options: mcqOptions("4", "2", "3", "5"),
           },
         ],
       });
@@ -151,10 +145,7 @@ describe("assessments and assignments", () => {
         questions: [
           {
             prompt: "Capital of France?",
-            options: [
-              { label: "Paris", isCorrect: true },
-              { label: "Lyon", isCorrect: false },
-            ],
+            options: mcqOptions("Paris", "Lyon", "Marseille", "Nice"),
           },
         ],
       });
@@ -173,10 +164,7 @@ describe("assessments and assignments", () => {
         questions: [
           {
             prompt: "1 + 1?",
-            options: [
-              { label: "2", isCorrect: true },
-              { label: "3", isCorrect: false },
-            ],
+            options: mcqOptions("2", "3", "4", "0"),
           },
         ],
       });
@@ -378,5 +366,93 @@ describe("assessments and assignments", () => {
     expect(graded.status).toBe(200);
     expect(graded.body.data.submission.status).toBe("GRADED");
     expect(graded.body.data.submission.score).toBe(90);
+  });
+
+  it("draws a subset of the question bank and shuffles options per attempt", async () => {
+    const trainerCookie = await login(accounts.trainer.email);
+    const adminCookie = await login(accounts.admin.email);
+    const traineeCookie = await login(accounts.trainee.email);
+
+    const created = await request(app)
+      .post("/api/v1/trainer/programs")
+      .set("Cookie", trainerCookie)
+      .send({
+        title: "Draw Bank Track",
+        description: "Random draw",
+        category: "Web",
+        difficulty: "BEGINNER",
+        durationWeeks: 1,
+        trainingMode: "PROGRESSION",
+      });
+    expect(created.status).toBe(201);
+    const programId = created.body.data.program.id as string;
+
+    const weekRes = await request(app)
+      .post(`/api/v1/trainer/programs/${programId}/weeks`)
+      .set("Cookie", trainerCookie)
+      .send({ title: "Week 1" });
+    expect(weekRes.status).toBe(200);
+    const weekId = weekRes.body.data.program.weeks[0].id as string;
+    const dayRes = await request(app)
+      .post(`/api/v1/trainer/weeks/${weekId}/days`)
+      .set("Cookie", trainerCookie)
+      .send({ title: "Day 1" });
+    expect(dayRes.status).toBe(200);
+    const dayId = dayRes.body.data.program.weeks[0].days[0].id as string;
+    const lessonRes = await request(app)
+      .post(`/api/v1/trainer/days/${dayId}/lessons`)
+      .set("Cookie", trainerCookie)
+      .send({ title: "Intro", required: true });
+    expect(lessonRes.status).toBe(200);
+
+    const bank = [1, 2, 3, 4, 5].map((n) => ({
+      prompt: `Bank question ${n}?`,
+      options: mcqOptions(`A${n}`, `B${n}`, `C${n}`, `D${n}`),
+    }));
+    const quizRes = await request(app)
+      .post(`/api/v1/trainer/days/${dayId}/practice-quiz`)
+      .set("Cookie", trainerCookie)
+      .send({
+        title: "Drawn practice",
+        passingScore: 70,
+        randomized: true,
+        questionDrawCount: 2,
+        questions: bank,
+      });
+    expect(quizRes.status).toBe(200);
+    const quiz = quizRes.body.data.program.weeks[0].days[0].quizzes[0];
+    expect(quiz.questionDrawCount).toBe(2);
+    expect(quiz.questions).toHaveLength(5);
+
+    expect((await request(app).post(`/api/v1/programs/${programId}/submit`).set("Cookie", trainerCookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/programs/${programId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+    await enrollTraineeByEmail(app, trainerCookie, programId, accounts.trainee.email);
+
+    const learn = await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
+    expect(learn.status).toBe(200);
+    const items = (learn.body.data.weeks[0].days[0].items as Array<{ id: string; type: string; required: boolean }>).filter(
+      (item) => item.required && item.type === "LESSON",
+    );
+    for (const item of items) {
+      expect(
+        (await request(app).post(`/api/v1/trainee/items/${item.type}/${item.id}/complete`).set("Cookie", traineeCookie)).status,
+      ).toBe(200);
+    }
+
+    const catalog = await request(app).get(`/api/v1/trainee/assessments/${quiz.id}`).set("Cookie", traineeCookie);
+    expect(catalog.status).toBe(200);
+    expect(catalog.body.data.assessment.questionCount).toBe(2);
+    expect(catalog.body.data.assessment.questionBankCount).toBe(5);
+
+    const started = await request(app)
+      .post(`/api/v1/trainee/assessments/${quiz.id}/attempts`)
+      .set("Cookie", traineeCookie);
+    expect(started.status).toBe(201);
+    const attempt = started.body.data.attempt;
+    expect(attempt.questions).toHaveLength(2);
+    expect(attempt.questions[0].options).toHaveLength(4);
+    const drawnIds = attempt.questions.map((row: { id: string }) => row.id);
+    expect(new Set(drawnIds).size).toBe(2);
+    expect(JSON.stringify(started.body)).not.toContain("isCorrect");
   });
 });

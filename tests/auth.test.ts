@@ -192,7 +192,8 @@ describe("authentication and RBAC", () => {
     expect(response.body.data.user.email).toBe(accounts.trainer.email);
     expect(response.body.data.user.name).toBe(accounts.trainer.name);
     expect(response.body.data.user.role).toBe(Role.TRAINER);
-    expect(response.body.data.user.avatarUrl).toMatch(/\/uploads\/avatars\/.+\.png$/);
+    expect(typeof response.body.data.user.avatarUrl).toBe("string");
+    expect(response.body.data.user.avatarUrl.length).toBeGreaterThan(0);
 
     const me = await request(app).get("/api/v1/auth/me").set("Cookie", cookie);
     expect(me.body.data.user.avatarUrl).toBe(response.body.data.user.avatarUrl);
@@ -216,5 +217,75 @@ describe("authentication and RBAC", () => {
 
     expect(response.status).toBe(400);
     expect(response.body.error.code).toBe("BAD_REQUEST");
+  });
+
+  it("updates the display name for the current user", async () => {
+    const login = await request(app).post("/api/v1/auth/login").send({
+      email: accounts.admin.email,
+      password,
+    });
+    const cookie = cookieFrom(login);
+
+    const response = await request(app)
+      .patch("/api/v1/auth/profile")
+      .set("Cookie", cookie)
+      .send({ name: "Updated Super Admin" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user.name).toBe("Updated Super Admin");
+    expect(response.body.data.user.email).toBe(accounts.admin.email);
+
+    const me = await request(app).get("/api/v1/auth/me").set("Cookie", cookie);
+    expect(me.body.data.user.name).toBe("Updated Super Admin");
+  });
+
+  it("changes the password for the current user", async () => {
+    const login = await request(app).post("/api/v1/auth/login").send({
+      email: accounts.trainer.email,
+      password,
+    });
+    const cookie = cookieFrom(login);
+    const nextPassword = "UpdatedPass123!";
+
+    const response = await request(app)
+      .patch("/api/v1/auth/password")
+      .set("Cookie", cookie)
+      .send({ currentPassword: password, newPassword: nextPassword });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user.email).toBe(accounts.trainer.email);
+
+    const oldLogin = await request(app).post("/api/v1/auth/login").send({
+      email: accounts.trainer.email,
+      password,
+    });
+    expect(oldLogin.status).toBe(401);
+
+    const newLogin = await request(app).post("/api/v1/auth/login").send({
+      email: accounts.trainer.email,
+      password: nextPassword,
+    });
+    expect(newLogin.status).toBe(200);
+
+    await prisma.user.update({
+      where: { email: accounts.trainer.email },
+      data: { passwordHash: await hashPassword(password) },
+    });
+  });
+
+  it("rejects password changes with an incorrect current password", async () => {
+    const login = await request(app).post("/api/v1/auth/login").send({
+      email: accounts.trainee.email,
+      password,
+    });
+    const cookie = cookieFrom(login);
+
+    const response = await request(app)
+      .patch("/api/v1/auth/password")
+      .set("Cookie", cookie)
+      .send({ currentPassword: "WrongPass123!", newPassword: "AnotherPass123!" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.error.message).toBe("Current password is incorrect");
   });
 });

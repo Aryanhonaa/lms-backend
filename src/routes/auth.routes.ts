@@ -7,6 +7,7 @@ import { validateBody } from "../middleware/validate-body";
 import { ApiError } from "../utils/api-error";
 import { asyncHandler } from "../utils/async-handler";
 import { loginSchema } from "../validators/auth.validators";
+import { changePasswordSchema, updateProfileSchema } from "../validators/profile.validators";
 
 export const authRouter = Router();
 
@@ -33,4 +34,11 @@ authRouter.post(
 );
 authRouter.post("/logout", asyncHandler(authController.logout));
 authRouter.get("/me", requireAuth, authController.me);
+authRouter.patch("/profile", requireAuth, validateBody(updateProfileSchema), asyncHandler(authController.updateProfile));
+authRouter.patch(
+  "/password",
+  requireAuth,
+  validateBody(changePasswordSchema),
+  asyncHandler(authController.changePassword),
+);
 authRouter.post("/avatar", requireAuth, acceptAvatar, asyncHandler(authController.updateAvatar));
