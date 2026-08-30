@@ -42,7 +42,7 @@ import {
   moderateFeedbackSchema,
   submitFeedbackSchema,
 } from "../validators/engagement.validators";
-import { createUserSchema } from "../validators/user.validators";
+import { createUserSchema, updateUserSchema } from "../validators/user.validators";
 import { revokeCertificateSchema } from "../validators/certificate.validators";
 import { usageHeartbeatSchema } from "../validators/app-usage.validators";
 import { trainerProgramRouter } from "./program.routes";
@@ -55,6 +55,12 @@ adminRouter.post(
   requireRole("SUPER_ADMIN", "ADMIN"),
   validateBody(createUserSchema),
   asyncHandler(adminController.createUser),
+);
+adminRouter.patch(
+  "/users/:userId",
+  requireRole("SUPER_ADMIN", "ADMIN"),
+  validateBody(updateUserSchema),
+  asyncHandler(adminController.updateUser),
 );
 adminRouter.delete("/users/:userId", requireRole("SUPER_ADMIN", "ADMIN"), asyncHandler(adminController.deleteUser));
 adminRouter.get("/dashboard", requireRole("SUPER_ADMIN"), asyncHandler(adminController.getDashboard));

@@ -121,6 +121,18 @@ export const userRepository = {
     });
   },
 
+  updateAccount(userId: string, input: { name: string; email: string; passwordHash?: string }) {
+    return prisma.user.update({
+      where: { id: userId },
+      data: {
+        name: input.name,
+        email: input.email.toLowerCase(),
+        ...(input.passwordHash ? { passwordHash: input.passwordHash } : {}),
+      },
+      select: userPublicSelect,
+    });
+  },
+
   updatePasswordHash(userId: string, passwordHash: string) {
     return prisma.user.update({
       where: { id: userId },

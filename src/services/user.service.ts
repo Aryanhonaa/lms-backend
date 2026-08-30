@@ -3,9 +3,9 @@ import { userRepository } from "../repositories/user.repository";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
 import { hashPassword } from "../utils/password";
-import { canCreateRole, canDeleteRole } from "../utils/roles";
+import { canCreateRole, canDeleteRole, canEditRole } from "../utils/roles";
 import { isUuid } from "../validators/common";
-import type { CreateUserInput } from "../validators/user.validators";
+import type { CreateUserInput, UpdateUserInput } from "../validators/user.validators";
 
 export const userService = {
   async createAccount(actor: AuthUser, input: CreateUserInput) {
@@ -87,5 +87,46 @@ export const userService = {
     }
 
     return { deleted: true };
+  },
+
+  async updateAccount(actor: AuthUser, userId: string, input: UpdateUserInput) {
+    if (!isUuid(userId)) {
+      throw ApiError.notFound("User not found.");
+    }
+
+    const target = await userRepository.findById(userId);
+    if (!target) {
+      throw ApiError.notFound("User not found.");
+    }
+    if (!canEditRole(actor.role, target.role)) {
+      throw ApiError.forbidden("You don't have permission to edit this account.");
+    }
+
+    const normalizedEmail = input.email.trim().toLowerCase();
+    if (normalizedEmail !== target.email.toLowerCase()) {
+      const existing = await userRepository.findByEmail(normalizedEmail);
+      if (existing && existing.id !== userId) {
+        throw ApiError.conflict("An account with this email already exists.");
+      }
+    }
+
+    const password = input.password?.trim();
+    const passwordHash = password ? await hashPassword(password) : undefined;
+
+    try {
+      return await userRepository.updateAccount(userId, {
+        name: input.name.trim(),
+        email: normalizedEmail,
+        passwordHash,
+      });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
+        throw ApiError.conflict("An account with this email already exists.");
+      }
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2025") {
+        throw ApiError.notFound("User not found.");
+      }
+      throw error;
+    }
   },
 };

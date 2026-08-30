@@ -35,3 +35,11 @@ export function deletableRolesFor(actor: Role): Role[] {
 export function canDeleteRole(actor: Role, target: Role): boolean {
   return deletableRolesFor(actor).includes(target);
 }
+
+export function editableRolesFor(actor: Role): Role[] {
+  return deletableRolesFor(actor);
+}
+
+export function canEditRole(actor: Role, target: Role): boolean {
+  return editableRolesFor(actor).includes(target);
+}

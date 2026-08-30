@@ -5,7 +5,7 @@ import { adminService, traineeService, trainerService } from "../services/rbac.s
 import { trainerDashboardService } from "../services/trainer-dashboard.service";
 import { traineeDashboardService } from "../services/trainee-dashboard.service";
 import { userService } from "../services/user.service";
-import type { CreateUserInput } from "../validators/user.validators";
+import type { CreateUserInput, UpdateUserInput } from "../validators/user.validators";
 import { sendSuccess } from "../utils/api-response";
 import { routeParam } from "../utils/route-param";
 
@@ -22,6 +22,11 @@ export const adminController = {
 
   async deleteUser(req: Request, res: Response): Promise<void> {
     sendSuccess(res, await userService.deleteAccount(req.user!, routeParam(req, "userId")));
+  },
+
+  async updateUser(req: Request, res: Response): Promise<void> {
+    const user = await userService.updateAccount(req.user!, routeParam(req, "userId"), req.body as UpdateUserInput);
+    sendSuccess(res, { user });
   },
 
   async getDashboard(_req: Request, res: Response): Promise<void> {

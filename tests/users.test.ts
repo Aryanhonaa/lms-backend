@@ -393,3 +393,98 @@ describe("user deletion", () => {
     expect(await prisma.program.findUnique({ where: { id: programId } })).toBeTruthy();
   });
 });
+
+describe("user account updates", () => {
+  const updateSuffix = `${Date.now()}-update`;
+  const updatePassword = "UpdatedPass123!";
+  const updateAccounts = {
+    superAdmin: { name: "Update Super", email: `update.super.${updateSuffix}@lms.local`, role: Role.SUPER_ADMIN },
+    admin: { name: "Update Admin", email: `update.admin.${updateSuffix}@lms.local`, role: Role.ADMIN },
+    trainer: { name: "Update Trainer", email: `update.trainer.${updateSuffix}@lms.local`, role: Role.TRAINER },
+    trainee: { name: "Update Trainee", email: `update.trainee.${updateSuffix}@lms.local`, role: Role.TRAINEE },
+  };
+
+  beforeAll(async () => {
+    const passwordHash = await hashPassword(password);
+    await prisma.user.createMany({
+      data: Object.values(updateAccounts).map((account) => ({ ...account, passwordHash })),
+    });
+  });
+
+  afterAll(async () => {
+    const emails = Object.values(updateAccounts).map((account) => account.email);
+    await prisma.session.deleteMany({ where: { user: { email: { in: emails } } } });
+    await prisma.user.deleteMany({ where: { email: { in: emails } } });
+  });
+
+  it("lets a super admin update a trainee name, email, and password", async () => {
+    const superCookie = await login(updateAccounts.superAdmin.email);
+    const trainee = await prisma.user.findUniqueOrThrow({ where: { email: updateAccounts.trainee.email } });
+    const nextEmail = `updated.trainee.${updateSuffix}@lms.local`;
+
+    const response = await request(app)
+      .patch(`/api/v1/admin/users/${trainee.id}`)
+      .set("Cookie", superCookie)
+      .send({
+        name: "Updated Trainee",
+        email: nextEmail,
+        password: updatePassword,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user.name).toBe("Updated Trainee");
+    expect(response.body.data.user.email).toBe(nextEmail);
+
+    const stored = await prisma.user.findUniqueOrThrow({ where: { id: trainee.id } });
+    expect(stored.name).toBe("Updated Trainee");
+    expect(stored.email).toBe(nextEmail);
+    expect(await verifyPassword(updatePassword, stored.passwordHash)).toBe(true);
+
+    expect((await request(app).post("/api/v1/auth/login").send({ email: nextEmail, password: updatePassword })).status).toBe(200);
+  });
+
+  it("lets an admin update a trainer without changing the password when omitted", async () => {
+    const adminCookie = await login(updateAccounts.admin.email);
+    const trainer = await prisma.user.findUniqueOrThrow({ where: { email: updateAccounts.trainer.email } });
+    const beforeHash = trainer.passwordHash;
+
+    const response = await request(app)
+      .patch(`/api/v1/admin/users/${trainer.id}`)
+      .set("Cookie", adminCookie)
+      .send({
+        name: "Renamed Trainer",
+        email: updateAccounts.trainer.email,
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user.name).toBe("Renamed Trainer");
+
+    const stored = await prisma.user.findUniqueOrThrow({ where: { id: trainer.id } });
+    expect(stored.passwordHash).toBe(beforeHash);
+  });
+
+  it("rejects duplicate emails and privileged edits", async () => {
+    const superCookie = await login(updateAccounts.superAdmin.email);
+    const adminCookie = await login(updateAccounts.admin.email);
+    const trainer = await prisma.user.findUniqueOrThrow({ where: { email: updateAccounts.trainer.email } });
+    const admin = await prisma.user.findUniqueOrThrow({ where: { email: updateAccounts.admin.email } });
+
+    const duplicate = await request(app)
+      .patch(`/api/v1/admin/users/${trainer.id}`)
+      .set("Cookie", superCookie)
+      .send({
+        name: trainer.name,
+        email: updateAccounts.admin.email,
+      });
+    expect(duplicate.status).toBe(409);
+
+    const forbidden = await request(app)
+      .patch(`/api/v1/admin/users/${admin.id}`)
+      .set("Cookie", adminCookie)
+      .send({
+        name: "Blocked",
+        email: admin.email,
+      });
+    expect(forbidden.status).toBe(403);
+  });
+});
