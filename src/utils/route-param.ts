@@ -8,5 +8,5 @@ export function routeParam(req: Request, name: string): string {
     throw ApiError.badRequest("Invalid request");
   }
 
-  return value;
+  return decodeURIComponent(value.trim());
 }

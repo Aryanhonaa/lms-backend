@@ -423,7 +423,7 @@ describe("user account updates", () => {
     const nextEmail = `updated.trainee.${updateSuffix}@lms.local`;
 
     const response = await request(app)
-      .patch(`/api/v1/admin/users/${trainee.id}`)
+      .post(`/api/v1/admin/users/${trainee.id}/update`)
       .set("Cookie", superCookie)
       .send({
         name: "Updated Trainee",
@@ -449,7 +449,7 @@ describe("user account updates", () => {
     const beforeHash = trainer.passwordHash;
 
     const response = await request(app)
-      .patch(`/api/v1/admin/users/${trainer.id}`)
+      .put(`/api/v1/admin/users/${trainer.id}`)
       .set("Cookie", adminCookie)
       .send({
         name: "Renamed Trainer",
@@ -479,7 +479,7 @@ describe("user account updates", () => {
     expect(duplicate.status).toBe(409);
 
     const forbidden = await request(app)
-      .patch(`/api/v1/admin/users/${admin.id}`)
+      .post(`/api/v1/admin/users/${admin.id}/update`)
       .set("Cookie", adminCookie)
       .send({
         name: "Blocked",

@@ -56,6 +56,18 @@ adminRouter.post(
   validateBody(createUserSchema),
   asyncHandler(adminController.createUser),
 );
+adminRouter.post(
+  "/users/:userId/update",
+  requireRole("SUPER_ADMIN", "ADMIN"),
+  validateBody(updateUserSchema),
+  asyncHandler(adminController.updateUser),
+);
+adminRouter.put(
+  "/users/:userId",
+  requireRole("SUPER_ADMIN", "ADMIN"),
+  validateBody(updateUserSchema),
+  asyncHandler(adminController.updateUser),
+);
 adminRouter.patch(
   "/users/:userId",
   requireRole("SUPER_ADMIN", "ADMIN"),

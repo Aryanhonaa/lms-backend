@@ -4,7 +4,7 @@ import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
 import { hashPassword } from "../utils/password";
 import { canCreateRole, canDeleteRole, canEditRole } from "../utils/roles";
-import { isUuid } from "../validators/common";
+import { isUuid, normalizeUuid } from "../validators/common";
 import type { CreateUserInput, UpdateUserInput } from "../validators/user.validators";
 
 export const userService = {
@@ -89,8 +89,9 @@ export const userService = {
     return { deleted: true };
   },
 
-  async updateAccount(actor: AuthUser, userId: string, input: UpdateUserInput) {
-    if (!isUuid(userId)) {
+  async updateAccount(actor: AuthUser, userIdRaw: string, input: UpdateUserInput) {
+    const userId = normalizeUuid(userIdRaw);
+    if (!userId) {
       throw ApiError.notFound("User not found.");
     }
 

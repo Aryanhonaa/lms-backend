@@ -3,8 +3,19 @@ export function isNonEmptyString(value: unknown): value is string {
 }
 
 export function isUuid(value: unknown): value is string {
-  return (
-    typeof value === "string" &&
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
-  );
+  if (typeof value !== "string") {
+    return false;
+  }
+
+  const trimmed = value.trim();
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(trimmed);
+}
+
+export function normalizeUuid(value: unknown): string | null {
+  if (typeof value !== "string") {
+    return null;
+  }
+
+  const trimmed = value.trim();
+  return isUuid(trimmed) ? trimmed.toLowerCase() : null;
 }
