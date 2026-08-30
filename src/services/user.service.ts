@@ -2,6 +2,7 @@ import { Prisma, Role } from "../generated/prisma";
 import { userRepository } from "../repositories/user.repository";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { serializePublicUser } from "../utils/avatar-url";
 import { hashPassword } from "../utils/password";
 import { canCreateRole, canDeleteRole, canEditRole } from "../utils/roles";
 import { isUuid, normalizeUuid } from "../validators/common";
@@ -21,12 +22,14 @@ export const userService = {
     const passwordHash = await hashPassword(input.password);
 
     try {
-      return await userRepository.create({
-        name: input.name,
-        email: input.email,
-        passwordHash,
-        role: input.role,
-      });
+      return await serializePublicUser(
+        await userRepository.create({
+          name: input.name,
+          email: input.email,
+          passwordHash,
+          role: input.role,
+        }),
+      );
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         throw ApiError.conflict("An account with this email already exists.");
@@ -115,11 +118,13 @@ export const userService = {
     const passwordHash = password ? await hashPassword(password) : undefined;
 
     try {
-      return await userRepository.updateAccount(userId, {
-        name: input.name.trim(),
-        email: normalizedEmail,
-        passwordHash,
-      });
+      return await serializePublicUser(
+        await userRepository.updateAccount(userId, {
+          name: input.name.trim(),
+          email: normalizedEmail,
+          passwordHash,
+        }),
+      );
     } catch (error) {
       if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === "P2002") {
         throw ApiError.conflict("An account with this email already exists.");

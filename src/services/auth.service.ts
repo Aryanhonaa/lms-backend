@@ -5,50 +5,12 @@ import { fileStorage } from "../storage";
 import { appUsageService } from "./app-usage.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { avatarStorageKey, resolveAvatarUrl } from "../utils/avatar-url";
 import { createSessionToken, hashSessionToken } from "../utils/session-token";
 import { hashPassword, verifyPassword } from "../utils/password";
 
 const AVATAR_TYPES = new Set(["image/jpeg", "image/png", "image/webp"]);
 const AVATAR_NAME = /\.(jpe?g|png|webp)$/i;
-
-function avatarStorageKey(avatarRef: string | null | undefined): string | null {
-  if (!avatarRef) {
-    return null;
-  }
-
-  const marker = "/uploads/";
-  const index = avatarRef.indexOf(marker);
-  if (index !== -1) {
-    const key = avatarRef.slice(index + marker.length).replace(/^\/+/, "");
-    return key.length > 0 ? key : null;
-  }
-
-  if (!avatarRef.startsWith("http://") && !avatarRef.startsWith("https://")) {
-    const key = avatarRef.replace(/^\/+/, "");
-    return key.length > 0 ? key : null;
-  }
-
-  return null;
-}
-
-async function resolveAvatarUrl(avatarRef: string | null | undefined): Promise<string | null> {
-  if (!avatarRef) {
-    return null;
-  }
-
-  if (avatarRef.startsWith("http://") || avatarRef.startsWith("https://")) {
-    return avatarRef;
-  }
-
-  const key = avatarStorageKey(avatarRef);
-  if (!key) {
-    return null;
-  }
-
-  return fileStorage.signedDownloadUrl(key, {
-    expiresInSeconds: env.signedUrlExpiresSeconds,
-  });
-}
 
 async function serializeAuthUser(user: {
   id: string;

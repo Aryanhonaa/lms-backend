@@ -1,10 +1,11 @@
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programRepository } from "../repositories/program.repository";
 import { userRepository } from "../repositories/user.repository";
+import { serializePublicUsers } from "../utils/avatar-url";
 
 export const adminService = {
-  listUsers() {
-    return userRepository.listPublic();
+  async listUsers() {
+    return serializePublicUsers(await userRepository.listPublic());
   },
 };
 

@@ -5,6 +5,7 @@ import { userRepository } from "../repositories/user.repository";
 import { progressService } from "./progress.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { serializePublicUser, serializePublicUsers } from "../utils/avatar-url";
 import { isProgramReviewer } from "../utils/roles";
 
 function requireReviewer(user: AuthUser) {
@@ -17,7 +18,7 @@ export const adminPeopleService = {
   async listTrainers(user: AuthUser, query: string) {
     requireReviewer(user);
     const needle = query.trim().toLowerCase();
-    const trainers = await userRepository.listPublicByRoles([Role.TRAINER]);
+    const trainers = await serializePublicUsers(await userRepository.listPublicByRoles([Role.TRAINER]));
     const filtered = needle
       ? trainers.filter((row) => `${row.name} ${row.email}`.toLowerCase().includes(needle))
       : trainers;
@@ -27,7 +28,7 @@ export const adminPeopleService = {
   async listTrainees(user: AuthUser, query: string) {
     requireReviewer(user);
     const needle = query.trim().toLowerCase();
-    const trainees = await userRepository.listPublicByRoles([Role.TRAINEE]);
+    const trainees = await serializePublicUsers(await userRepository.listPublicByRoles([Role.TRAINEE]));
     const filtered = needle
       ? trainees.filter((row) => `${row.name} ${row.email}`.toLowerCase().includes(needle))
       : trainees;
@@ -70,6 +71,6 @@ export const adminPeopleService = {
       });
     }
 
-    return { trainee, programs };
+    return { trainee: await serializePublicUser(trainee), programs };
   },
 };
