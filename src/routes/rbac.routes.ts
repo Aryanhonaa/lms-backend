@@ -157,6 +157,7 @@ trainerRouter.patch(
   asyncHandler(interventionController.updateFlag),
 );
 trainerRouter.get("/enrollments", asyncHandler(interventionController.listEnrollments));
+trainerRouter.get("/trainees", asyncHandler(enrollmentController.listTrainerTrainees));
 trainerRouter.get("/enrollments/:enrollmentId/progress", asyncHandler(enrollmentController.getEnrollmentProgress));
 trainerRouter.get("/requirements", asyncHandler(interventionController.listRequirements));
 trainerRouter.get("/requirements/:id", asyncHandler(interventionController.getRequirement));

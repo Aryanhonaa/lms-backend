@@ -101,6 +101,54 @@ export const enrollmentService = {
     return this.buildRoster(programId);
   },
 
+  async listTrainerTrainees(user: AuthUser, filterProgramId?: string) {
+    const programIds = await programService.listProgramIdsForTrainer(user.id);
+    const programs = await prisma.program.findMany({
+      where: { id: { in: programIds } },
+      select: { id: true, title: true },
+      orderBy: { title: "asc" },
+    });
+
+    if (programIds.length === 0) {
+      return { programs: [], trainees: [], counts: traineeRosterCounts([]) };
+    }
+
+    let targetProgramIds = programIds;
+    if (filterProgramId) {
+      if (!programIds.includes(filterProgramId)) {
+        throw ApiError.forbidden("You don't have access to this program.");
+      }
+      targetProgramIds = [filterProgramId];
+    }
+
+    const programTitleById = new Map(programs.map((program) => [program.id, program.title]));
+    const trainees: Array<TraineeRosterRow & { program: { id: string; title: string } }> = [];
+
+    for (const programId of targetProgramIds) {
+      const roster = await this.buildRoster(programId);
+      for (const row of roster.trainees) {
+        trainees.push({
+          ...row,
+          program: { id: programId, title: programTitleById.get(programId) ?? "Unknown" },
+        });
+      }
+    }
+
+    trainees.sort((left, right) => {
+      const byName = left.trainee.name.localeCompare(right.trainee.name);
+      if (byName !== 0) {
+        return byName;
+      }
+      return left.program.title.localeCompare(right.program.title);
+    });
+
+    return {
+      programs,
+      trainees,
+      counts: traineeRosterCounts(trainees),
+    };
+  },
+
   async getEnrollmentProgress(user: AuthUser, enrollmentId: string) {
     const { progressService } = await import("./progress.service");
     const enrollment = await enrollmentRepository.findFactsById(enrollmentId);

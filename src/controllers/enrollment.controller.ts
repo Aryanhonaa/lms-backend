@@ -37,6 +37,11 @@ export const enrollmentController = {
     sendSuccess(res, await enrollmentService.listProgramTrainees(req.user!, routeParam(req, "programId")));
   },
 
+  async listTrainerTrainees(req: Request, res: Response) {
+    const programId = typeof req.query.programId === "string" ? req.query.programId : undefined;
+    sendSuccess(res, await enrollmentService.listTrainerTrainees(req.user!, programId));
+  },
+
   async getEnrollmentProgress(req: Request, res: Response) {
     sendSuccess(res, await enrollmentService.getEnrollmentProgress(req.user!, routeParam(req, "enrollmentId")));
   },

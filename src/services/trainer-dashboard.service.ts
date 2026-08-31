@@ -202,7 +202,7 @@ export const trainerDashboardService = {
         name: row.user.name,
         email: row.user.email,
         programTitle: row.program.title,
-        href: `/trainer/programs/${row.programId}/trainees`,
+        href: `/trainer/trainees?programId=${row.programId}`,
       });
       if (trainees.length >= 5) {
         break;

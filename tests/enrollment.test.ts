@@ -159,6 +159,26 @@ describe("admin role, approval, and trainer enrollment", () => {
     expect(roster.status).toBe(200);
     expect(roster.body.data.trainees).toHaveLength(2);
 
+    const allTrainees = await request(app).get("/api/v1/trainer/trainees").set("Cookie", trainerCookie);
+    expect(allTrainees.status).toBe(200);
+    expect(allTrainees.body.data.trainees).toHaveLength(2);
+    expect(allTrainees.body.data.programs.some((row: { id: string }) => row.id === programId)).toBe(true);
+
+    const filteredTrainees = await request(app)
+      .get(`/api/v1/trainer/trainees?programId=${programId}`)
+      .set("Cookie", trainerCookie);
+    expect(filteredTrainees.status).toBe(200);
+    expect(filteredTrainees.body.data.trainees).toHaveLength(2);
+
+    const otherProgramId = await createSubmittedProgram(otherTrainerCookie, `Other ${suffix}`);
+    expect(
+      (
+        await request(app)
+          .get(`/api/v1/trainer/trainees?programId=${otherProgramId}`)
+          .set("Cookie", trainerCookie)
+      ).status,
+    ).toBe(403);
+
     const detail = await request(app).get(`/api/v1/admin/trainees/${trainee.id}`).set("Cookie", adminCookie);
     expect(detail.status).toBe(200);
     expect(detail.body.data.trainee.email).toBe(accounts.trainee.email);
