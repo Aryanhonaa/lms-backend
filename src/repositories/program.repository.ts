@@ -8,12 +8,24 @@ export const REVIEW_VISIBLE_PROGRAM_STATUSES: ProgramStatus[] = [
   ProgramStatus.PUBLISHED,
 ];
 
+const personSelect = { id: true, name: true, email: true } as const;
+
+const programTrainerInclude = {
+  include: { user: { select: personSelect } },
+  orderBy: { createdAt: "asc" as const },
+};
+
+const programListInclude = {
+  createdBy: { select: personSelect },
+  rejectedBy: { select: personSelect },
+  trainers: programTrainerInclude,
+  _count: { select: { weeks: true, enrollments: true } },
+};
+
 export const programTreeInclude = {
-  createdBy: { select: { id: true, name: true, email: true } },
-  rejectedBy: { select: { id: true, name: true, email: true } },
-  trainers: {
-    include: { user: { select: { id: true, name: true, email: true } } },
-  },
+  createdBy: { select: personSelect },
+  rejectedBy: { select: personSelect },
+  trainers: programTrainerInclude,
   weeks: {
     orderBy: { sortOrder: "asc" as const },
     include: {
@@ -102,11 +114,7 @@ export const programRepository = {
         },
         OR: [{ createdByUserId: userId }, { status: { not: ProgramStatus.DRAFT } }],
       },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-        rejectedBy: { select: { id: true, name: true, email: true } },
-        _count: { select: { weeks: true, enrollments: true } },
-      },
+      include: programListInclude,
       orderBy: { createdAt: "desc" },
     });
   },
@@ -116,11 +124,7 @@ export const programRepository = {
       where: status
         ? { status }
         : { status: { in: [ProgramStatus.SUBMITTED, ProgramStatus.REJECTED, ProgramStatus.APPROVED] } },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-        rejectedBy: { select: { id: true, name: true, email: true } },
-        _count: { select: { weeks: true, enrollments: true } },
-      },
+      include: programListInclude,
       orderBy: { updatedAt: "desc" },
     });
   },
@@ -128,11 +132,7 @@ export const programRepository = {
   findCatalog() {
     return prisma.program.findMany({
       where: { status: { in: REVIEW_VISIBLE_PROGRAM_STATUSES } },
-      include: {
-        createdBy: { select: { id: true, name: true, email: true } },
-        rejectedBy: { select: { id: true, name: true, email: true } },
-        _count: { select: { weeks: true, enrollments: true } },
-      },
+      include: programListInclude,
       orderBy: { updatedAt: "desc" },
     });
   },

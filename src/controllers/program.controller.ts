@@ -52,6 +52,15 @@ export const programController = {
     sendSuccess(res, { program });
   },
 
+  async setTrainers(req: Request, res: Response): Promise<void> {
+    const program = await programService.setTrainers(
+      req.user!,
+      routeParam(req, "programId"),
+      req.body.trainerIds,
+    );
+    sendSuccess(res, { program });
+  },
+
   async remove(req: Request, res: Response): Promise<void> {
     sendSuccess(res, await programService.remove(req.user!, routeParam(req, "programId")));
   },

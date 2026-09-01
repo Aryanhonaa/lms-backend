@@ -6,4 +6,5 @@ export {
   createProgramSchema,
   updateProgramSchema,
   rejectProgramSchema,
+  assignProgramTrainersSchema,
 } from "./program.validators";

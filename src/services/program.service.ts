@@ -1,6 +1,7 @@
-import { ProgramStatus } from "../generated/prisma";
+import { ProgramStatus, Role } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { programRepository } from "../repositories/program.repository";
+import { programTrainerRepository } from "../repositories/program-trainer.repository";
 import { fileStorage } from "../storage";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
@@ -97,8 +98,39 @@ export const programService = {
       throw ApiError.notFound("Program not found");
     }
 
-    this.assertCanView(user, program);
+    await this.assertCanView(user, program);
     return program;
+  },
+
+  async setTrainers(user: AuthUser, programId: string, trainerIds: string[]) {
+    if (!isProgramReviewer(user.role)) {
+      throw ApiError.forbidden();
+    }
+
+    const program = await prisma.program.findUnique({ where: { id: programId } });
+    if (!program || program.status === ProgramStatus.DRAFT) {
+      throw ApiError.notFound("Program not found");
+    }
+
+    const uniqueIds = [...new Set(trainerIds)];
+    const coTrainerIds = uniqueIds.filter((id) => id !== program.createdByUserId);
+
+    if (coTrainerIds.length > 0) {
+      const trainers = await prisma.user.findMany({
+        where: { id: { in: coTrainerIds } },
+        select: { id: true, role: true, isActive: true },
+      });
+      const byId = new Map(trainers.map((row) => [row.id, row]));
+      for (const id of coTrainerIds) {
+        const trainer = byId.get(id);
+        if (!trainer || trainer.role !== Role.TRAINER || !trainer.isActive) {
+          throw ApiError.badRequest("Every assigned person must be an active trainer");
+        }
+      }
+    }
+
+    await programTrainerRepository.replaceCoTrainers(programId, program.createdByUserId, coTrainerIds);
+    return this.getTreeForUser(user, programId);
   },
 
   async update(
@@ -353,7 +385,10 @@ export const programService = {
     return program;
   },
 
-  assertCanView(user: AuthUser, program: { status: ProgramStatus; createdByUserId: string }) {
+  async assertCanView(
+    user: AuthUser,
+    program: { id: string; status: ProgramStatus; createdByUserId: string },
+  ) {
     if (program.status === ProgramStatus.DRAFT) {
       if (user.role === "TRAINER" && program.createdByUserId === user.id) {
         return;
@@ -365,8 +400,16 @@ export const programService = {
       return;
     }
 
-    if (user.role === "TRAINER" && program.createdByUserId === user.id) {
-      return;
+    if (user.role === "TRAINER") {
+      if (program.createdByUserId === user.id) {
+        return;
+      }
+      const membership = await prisma.programTrainer.findUnique({
+        where: { programId_userId: { programId: program.id, userId: user.id } },
+      });
+      if (membership) {
+        return;
+      }
     }
 
     throw ApiError.forbidden();
@@ -377,7 +420,7 @@ export const programService = {
     if (!program) {
       throw ApiError.notFound("Program not found");
     }
-    this.assertCanView(user, program);
+    await this.assertCanView(user, program);
     return program;
   },
 };

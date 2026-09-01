@@ -23,6 +23,10 @@ export const rejectProgramSchema = z.object({
   reason: z.string().trim().min(1),
 });
 
+export const assignProgramTrainersSchema = z.object({
+  trainerIds: z.array(z.string().uuid()).max(50),
+});
+
 export const enrollTraineesSchema = z.object({
   traineeIds: z.array(z.string().uuid()).min(1).max(25),
 });

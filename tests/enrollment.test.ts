@@ -212,4 +212,65 @@ describe("admin role, approval, and trainer enrollment", () => {
       .send({ traineeIds: [trainee.id], batchId: "00000000-0000-4000-8000-000000000000" });
     expect(rejectedEnroll.status).toBe(400);
   });
+
+  it("lets an admin assign additional trainers who can then view the course and enroll", async () => {
+    const adminCookie = await login(accounts.admin.email);
+    const trainerCookie = await login(accounts.trainer.email);
+    const otherTrainerCookie = await login(accounts.otherTrainer.email);
+
+    const programId = await createSubmittedProgram(trainerCookie, `Shared ${suffix}`);
+    expect((await request(app).post(`/api/v1/programs/${programId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+
+    const owner = await prisma.user.findUniqueOrThrow({ where: { email: accounts.trainer.email } });
+    const otherTrainer = await prisma.user.findUniqueOrThrow({ where: { email: accounts.otherTrainer.email } });
+    const trainee = await prisma.user.findUniqueOrThrow({ where: { email: accounts.trainee.email } });
+
+    expect(
+      (await request(app).get(`/api/v1/trainer/programs/${programId}`).set("Cookie", otherTrainerCookie)).status,
+    ).toBe(403);
+
+    const beforeList = await request(app).get("/api/v1/trainer/programs").set("Cookie", otherTrainerCookie);
+    expect(beforeList.body.data.programs.some((item: { id: string }) => item.id === programId)).toBe(false);
+
+    const assigned = await request(app)
+      .put(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", adminCookie)
+      .send({ trainerIds: [otherTrainer.id] });
+    expect(assigned.status).toBe(200);
+    const trainers = assigned.body.data.program.trainers as Array<{ userId: string; role: string }>;
+    expect(trainers.some((row) => row.userId === owner.id && row.role === "OWNER")).toBe(true);
+    expect(trainers.some((row) => row.userId === otherTrainer.id && row.role === "CO_TRAINER")).toBe(true);
+
+    const afterList = await request(app).get("/api/v1/trainer/programs").set("Cookie", otherTrainerCookie);
+    expect(afterList.body.data.programs.some((item: { id: string }) => item.id === programId)).toBe(true);
+    expect((await request(app).get(`/api/v1/trainer/programs/${programId}`).set("Cookie", otherTrainerCookie)).status).toBe(
+      200,
+    );
+
+    const batchId = (
+      await request(app)
+        .post(`/api/v1/trainer/programs/${programId}/batches`)
+        .set("Cookie", otherTrainerCookie)
+        .send({ name: "Co-trainer batch", capacity: 25 })
+    ).body.data.batch.id as string;
+
+    const enrolled = await request(app)
+      .post(`/api/v1/trainer/programs/${programId}/enrollments`)
+      .set("Cookie", otherTrainerCookie)
+      .send({ traineeIds: [trainee.id], batchId });
+    expect(enrolled.status).toBe(200);
+    expect(enrolled.body.data.enrolledCount).toBe(1);
+
+    const trainerCannotAssign = await request(app)
+      .put(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", trainerCookie)
+      .send({ trainerIds: [otherTrainer.id] });
+    expect(trainerCannotAssign.status).toBe(403);
+
+    const invalid = await request(app)
+      .put(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", adminCookie)
+      .send({ trainerIds: [trainee.id] });
+    expect(invalid.status).toBe(400);
+  });
 });
