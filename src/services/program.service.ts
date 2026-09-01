@@ -8,6 +8,7 @@ import { ApiError } from "../utils/api-error";
 import { isProgramReviewer } from "../utils/roles";
 
 const EDITABLE_STATUSES: ProgramStatus[] = [ProgramStatus.DRAFT, ProgramStatus.REJECTED];
+const POST_APPROVAL_STATUSES: ProgramStatus[] = [ProgramStatus.APPROVED, ProgramStatus.PUBLISHED];
 
 function parseDate(value: string | Date | null | undefined): Date | null {
   if (!value) {
@@ -15,6 +16,49 @@ function parseDate(value: string | Date | null | undefined): Date | null {
   }
 
   return value instanceof Date ? value : new Date(value);
+}
+
+function assertCanAssignTrainers(user: AuthUser, program: { status: ProgramStatus }) {
+  if (!isProgramReviewer(user.role)) {
+    throw ApiError.forbidden();
+  }
+
+  if (program.status === ProgramStatus.DRAFT) {
+    throw ApiError.notFound("Program not found");
+  }
+
+  if (POST_APPROVAL_STATUSES.includes(program.status) && user.role !== Role.SUPER_ADMIN) {
+    throw ApiError.forbidden("Only a super admin can change trainers after a course is approved");
+  }
+}
+
+async function requireAssignableProgram(programId: string) {
+  const program = await prisma.program.findUnique({ where: { id: programId } });
+  if (!program || program.status === ProgramStatus.DRAFT) {
+    throw ApiError.notFound("Program not found");
+  }
+  return program;
+}
+
+async function requireActiveTrainer(userId: string) {
+  const trainer = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { id: true, role: true, isActive: true },
+  });
+  if (!trainer || trainer.role !== Role.TRAINER || !trainer.isActive) {
+    throw ApiError.badRequest("Every assigned person must be an active trainer");
+  }
+  return trainer;
+}
+
+function serializeProgramTrainers(
+  trainers: Awaited<ReturnType<typeof programTrainerRepository.findByProgram>>,
+) {
+  return trainers.map((row) => ({
+    userId: row.userId,
+    role: row.role,
+    user: { id: row.user.id, name: row.user.name, email: row.user.email },
+  }));
 }
 
 export const programService = {
@@ -102,15 +146,38 @@ export const programService = {
     return program;
   },
 
-  async setTrainers(user: AuthUser, programId: string, trainerIds: string[]) {
+  async listTrainers(user: AuthUser, programId: string) {
     if (!isProgramReviewer(user.role)) {
       throw ApiError.forbidden();
     }
 
-    const program = await prisma.program.findUnique({ where: { id: programId } });
-    if (!program || program.status === ProgramStatus.DRAFT) {
-      throw ApiError.notFound("Program not found");
+    const program = await requireAssignableProgram(programId);
+    const trainers = await programTrainerRepository.findByProgram(programId);
+    return { trainers: serializeProgramTrainers(trainers) };
+  },
+
+  async addTrainer(user: AuthUser, programId: string, trainerId: string) {
+    const program = await requireAssignableProgram(programId);
+    assertCanAssignTrainers(user, program);
+
+    if (trainerId === program.createdByUserId) {
+      throw ApiError.badRequest("The course owner is already assigned as the primary trainer");
     }
+
+    await requireActiveTrainer(trainerId);
+
+    await prisma.programTrainer.upsert({
+      where: { programId_userId: { programId, userId: trainerId } },
+      create: { programId, userId: trainerId, role: "CO_TRAINER" },
+      update: { role: "CO_TRAINER" },
+    });
+
+    return this.listTrainers(user, programId);
+  },
+
+  async setTrainers(user: AuthUser, programId: string, trainerIds: string[]) {
+    const program = await requireAssignableProgram(programId);
+    assertCanAssignTrainers(user, program);
 
     const uniqueIds = [...new Set(trainerIds)];
     const coTrainerIds = uniqueIds.filter((id) => id !== program.createdByUserId);

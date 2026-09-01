@@ -52,6 +52,18 @@ export const programController = {
     sendSuccess(res, { program });
   },
 
+  async listTrainers(req: Request, res: Response): Promise<void> {
+    sendSuccess(res, await programService.listTrainers(req.user!, routeParam(req, "programId")));
+  },
+
+  async addTrainer(req: Request, res: Response): Promise<void> {
+    sendSuccess(
+      res,
+      await programService.addTrainer(req.user!, routeParam(req, "programId"), req.body.trainerId),
+      201,
+    );
+  },
+
   async setTrainers(req: Request, res: Response): Promise<void> {
     const program = await programService.setTrainers(
       req.user!,

@@ -27,6 +27,10 @@ export const assignProgramTrainersSchema = z.object({
   trainerIds: z.array(z.string().uuid()).max(50),
 });
 
+export const addProgramTrainerSchema = z.object({
+  trainerId: z.string().uuid(),
+});
+
 export const enrollTraineesSchema = z.object({
   traineeIds: z.array(z.string().uuid()).min(1).max(25),
 });

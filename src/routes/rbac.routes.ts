@@ -43,7 +43,7 @@ import {
   submitFeedbackSchema,
 } from "../validators/engagement.validators";
 import { createUserSchema, updateUserSchema } from "../validators/user.validators";
-import { assignProgramTrainersSchema } from "../validators/program.validators";
+import { addProgramTrainerSchema, assignProgramTrainersSchema } from "../validators/program.validators";
 import { revokeCertificateSchema } from "../validators/certificate.validators";
 import { usageHeartbeatSchema } from "../validators/app-usage.validators";
 import { trainerProgramRouter } from "./program.routes";
@@ -83,6 +83,12 @@ adminRouter.get("/trainees", asyncHandler(adminController.listTrainees));
 adminRouter.get("/trainees/:userId", asyncHandler(adminController.getTrainee));
 adminRouter.get("/programs", asyncHandler(programController.listForAdmin));
 adminRouter.get("/programs/:programId", asyncHandler(programController.get));
+adminRouter.get("/programs/:programId/trainers", asyncHandler(programController.listTrainers));
+adminRouter.post(
+  "/programs/:programId/trainers",
+  validateBody(addProgramTrainerSchema),
+  asyncHandler(programController.addTrainer),
+);
 adminRouter.put(
   "/programs/:programId/trainers",
   validateBody(assignProgramTrainersSchema),

@@ -214,6 +214,7 @@ describe("admin role, approval, and trainer enrollment", () => {
   });
 
   it("lets an admin assign additional trainers who can then view the course and enroll", async () => {
+    const superAdminCookie = await login(accounts.superAdmin.email);
     const adminCookie = await login(accounts.admin.email);
     const trainerCookie = await login(accounts.trainer.email);
     const otherTrainerCookie = await login(accounts.otherTrainer.email);
@@ -232,14 +233,37 @@ describe("admin role, approval, and trainer enrollment", () => {
     const beforeList = await request(app).get("/api/v1/trainer/programs").set("Cookie", otherTrainerCookie);
     expect(beforeList.body.data.programs.some((item: { id: string }) => item.id === programId)).toBe(false);
 
-    const assigned = await request(app)
+    const adminCannotAssignAfterApproval = await request(app)
       .put(`/api/v1/admin/programs/${programId}/trainers`)
       .set("Cookie", adminCookie)
       .send({ trainerIds: [otherTrainer.id] });
-    expect(assigned.status).toBe(200);
-    const trainers = assigned.body.data.program.trainers as Array<{ userId: string; role: string }>;
+    expect(adminCannotAssignAfterApproval.status).toBe(403);
+
+    const assigned = await request(app)
+      .post(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", superAdminCookie)
+      .send({ trainerId: otherTrainer.id });
+    expect(assigned.status).toBe(201);
+    const trainers = assigned.body.data.trainers as Array<{ userId: string; role: string }>;
     expect(trainers.some((row) => row.userId === owner.id && row.role === "OWNER")).toBe(true);
     expect(trainers.some((row) => row.userId === otherTrainer.id && row.role === "CO_TRAINER")).toBe(true);
+
+    const listed = await request(app)
+      .get(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", adminCookie);
+    expect(listed.status).toBe(200);
+    const listedTrainers = listed.body.data.trainers as Array<{ userId: string; role: string }>;
+    expect(listedTrainers.some((row) => row.userId === owner.id && row.role === "OWNER")).toBe(true);
+    expect(listedTrainers.some((row) => row.userId === otherTrainer.id && row.role === "CO_TRAINER")).toBe(true);
+
+    const replaced = await request(app)
+      .put(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", superAdminCookie)
+      .send({ trainerIds: [otherTrainer.id] });
+    expect(replaced.status).toBe(200);
+    const replacedTrainers = replaced.body.data.program.trainers as Array<{ userId: string; role: string }>;
+    expect(replacedTrainers.some((row) => row.userId === owner.id && row.role === "OWNER")).toBe(true);
+    expect(replacedTrainers.some((row) => row.userId === otherTrainer.id && row.role === "CO_TRAINER")).toBe(true);
 
     const afterList = await request(app).get("/api/v1/trainer/programs").set("Cookie", otherTrainerCookie);
     expect(afterList.body.data.programs.some((item: { id: string }) => item.id === programId)).toBe(true);
@@ -269,7 +293,7 @@ describe("admin role, approval, and trainer enrollment", () => {
 
     const invalid = await request(app)
       .put(`/api/v1/admin/programs/${programId}/trainers`)
-      .set("Cookie", adminCookie)
+      .set("Cookie", superAdminCookie)
       .send({ trainerIds: [trainee.id] });
     expect(invalid.status).toBe(400);
   });
