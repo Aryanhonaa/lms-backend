@@ -219,6 +219,16 @@ model User {
   enrollmentsCreated     Enrollment[]              @relation("EnrollmentActor")
   createdBatches         ProgramBatch[]            @relation("BatchCreator")
   contentAttachments     ContentAttachment[]       @relation("ContentAttachmentUploader")
+  nhtSalesBatches        NhtBatch[]                @relation("NhtSalesTrainer")
+  nhtFilesBatches        NhtBatch[]                @relation("NhtFilesTrainer")
+  nhtCreatedBatches      NhtBatch[]                @relation("NhtBatchCreator")
+  nhtTraineeRecords      NhtTrainee[]              @relation("NhtTraineeUser")
+  nhtAssignedTrainees    NhtTrainee[]              @relation("NhtTraineeTrainer")
+  nhtTerminatedTrainees  NhtTrainee[]              @relation("NhtTerminator")
+  nhtAttritionsRecorded  NhtAttrition[]            @relation("NhtAttritionRecorder")
+  nhtAuditsPerformed     NhtLcaAudit[]             @relation("NhtAuditor")
+  nhtTniAsTrainer        NhtTniCase[]              @relation("NhtTniTrainer")
+  nhtTniDecided          NhtTniCase[]              @relation("NhtTniDecider")
 
   @@index([role])
   @@index([isActive])
@@ -296,6 +306,7 @@ model Program {
   feedback           Feedback[]
   announcements      Announcement[]
   certificates       Certificate[]
+  nhtBatchLinks      NhtBatchProgram[]
 
   @@index([status])
   @@index([trainingMode])
@@ -374,6 +385,7 @@ model ProgramBatch {
   enrollments      Enrollment[]
   appUsageSessions AppUsageSession[]
   announcements    Announcement[]
+  nhtBatchLinks    NhtBatchProgram[]
 
   @@unique([programId, name])
   @@index([programId])
@@ -987,4 +999,220 @@ model Certificate {
   @@index([programId, status])
   @@index([status])
   @@index([trainerUserId])
+}
+
+enum TrainingProcess {
+  VOICE_SALES
+  NON_VOICE_SALES_SUPPORT
+}
+
+enum TrainingBatchStatus {
+  ONGOING
+  COMPLETED
+}
+
+enum TrackerTraineeStatus {
+  JOINED
+  IN_TRAINING
+  HR_ATTRITION
+  TRAINING_ATTRITION
+  EXAM_ELIGIBLE
+  EXAM_PENDING
+  EXAM_FAILED
+  CERTIFIED
+  HANDOVER_PENDING
+  HANDED_OVER
+  TNI
+  ACTIVE
+  TERMINATED
+}
+
+enum TrackerAttritionKind {
+  HR
+  TRAINING
+}
+
+enum TrackerAuditType {
+  CALL
+  CHAT
+}
+
+enum TrackerTniStatus {
+  OPEN
+  IN_SUPPORT
+  REAUDIT_PENDING
+  CLEARED
+  PERFORMANCE_WARNING
+  SUPERVISOR_REVIEW
+  CONTINUE_MONITORING
+  INTERNAL_TRANSFER
+  TERMINATED
+}
+
+enum TrackerTniDecision {
+  CLEARED
+  CONTINUE_MONITORING
+  INTERNAL_TRANSFER
+  TERMINATED
+}
+
+model NhtBatch {
+  id                    String              @id @default(uuid()) @db.Uuid
+  month                 Int
+  year                  Int
+  batchNumber           Int
+  code                  String              @unique
+  process               TrainingProcess
+  trainingStartDate     DateTime            @db.Date
+  targetCompletionDate  DateTime            @db.Date
+  actualCompletionDate  DateTime?           @db.Date
+  salesTrainerId        String              @db.Uuid
+  filesTrainerId        String?             @db.Uuid
+  status                TrainingBatchStatus @default(ONGOING)
+  day1Hc                Int                 @default(0)
+  day7Hc                Int?
+  day7FinalizedAt       DateTime?
+  createdByUserId       String              @db.Uuid
+  createdAt             DateTime            @default(now())
+  updatedAt             DateTime            @updatedAt
+
+  salesTrainer User             @relation("NhtSalesTrainer", fields: [salesTrainerId], references: [id], onDelete: Restrict)
+  filesTrainer User?            @relation("NhtFilesTrainer", fields: [filesTrainerId], references: [id], onDelete: SetNull)
+  createdBy    User             @relation("NhtBatchCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  courses      NhtBatchProgram[]
+  trainees     NhtTrainee[]
+  audits       NhtLcaAudit[]
+  tniCases     NhtTniCase[]
+
+  @@unique([year, month, batchNumber])
+  @@index([status])
+  @@index([salesTrainerId])
+  @@index([year, month])
+}
+
+model NhtBatchProgram {
+  id             String   @id @default(uuid()) @db.Uuid
+  batchId        String   @db.Uuid
+  programId      String   @db.Uuid
+  programBatchId String   @db.Uuid
+  createdAt      DateTime @default(now())
+
+  batch        NhtBatch     @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  program      Program      @relation(fields: [programId], references: [id], onDelete: Restrict)
+  programBatch ProgramBatch @relation(fields: [programBatchId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, programId])
+  @@index([programId])
+  @@index([programBatchId])
+}
+
+model NhtTrainee {
+  id                   String                @id @default(uuid()) @db.Uuid
+  userId               String                @db.Uuid
+  batchId              String?               @db.Uuid
+  process              TrainingProcess
+  trainerId            String?               @db.Uuid
+  team                 String                @default("")
+  supervisorName       String                @default("")
+  joiningDate          DateTime              @db.Date
+  status               TrackerTraineeStatus  @default(JOINED)
+  examEligible         Boolean               @default(false)
+  examAppeared         Boolean               @default(false)
+  examPassed           Boolean               @default(false)
+  examDate             DateTime?             @db.Date
+  examRemarks          String                @default("")
+  handoverDate         DateTime?             @db.Date
+  handoverTeam         String                @default("")
+  handoverSupervisor   String                @default("")
+  handoverRemarks      String                @default("")
+  terminatedAt         DateTime?
+  terminatedByUserId   String?               @db.Uuid
+  terminationConfirmed Boolean               @default(false)
+  terminationReason    String                @default("")
+  createdAt            DateTime              @default(now())
+  updatedAt            DateTime              @updatedAt
+
+  user         User            @relation("NhtTraineeUser", fields: [userId], references: [id], onDelete: Restrict)
+  batch        NhtBatch?       @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  trainer      User?           @relation("NhtTraineeTrainer", fields: [trainerId], references: [id], onDelete: SetNull)
+  terminatedBy User?           @relation("NhtTerminator", fields: [terminatedByUserId], references: [id], onDelete: SetNull)
+  attritions   NhtAttrition[]
+  audits       NhtLcaAudit[]
+  tniCases     NhtTniCase[]
+
+  @@index([userId])
+  @@index([batchId])
+  @@index([status])
+  @@index([trainerId])
+  @@index([process])
+}
+
+model NhtAttrition {
+  id              String               @id @default(uuid()) @db.Uuid
+  traineeId       String               @db.Uuid
+  kind            TrackerAttritionKind
+  date            DateTime             @db.Date
+  reason          String
+  remarks         String               @default("")
+  recordedByUserId String              @db.Uuid
+  createdAt       DateTime             @default(now())
+
+  trainee    NhtTrainee @relation(fields: [traineeId], references: [id], onDelete: Cascade)
+  recordedBy User       @relation("NhtAttritionRecorder", fields: [recordedByUserId], references: [id], onDelete: Restrict)
+
+  @@index([traineeId])
+  @@index([kind])
+}
+
+model NhtLcaAudit {
+  id            String           @id @default(uuid()) @db.Uuid
+  traineeId     String           @db.Uuid
+  batchId       String?          @db.Uuid
+  weekNumber    Int
+  auditDate     DateTime         @db.Date
+  auditType     TrackerAuditType
+  score         Decimal          @db.Decimal(5, 2)
+  auditorUserId String           @db.Uuid
+  remarks       String           @default("")
+  isReAudit     Boolean          @default(false)
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  trainee NhtTrainee @relation(fields: [traineeId], references: [id], onDelete: Cascade)
+  batch   NhtBatch?  @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  auditor User       @relation("NhtAuditor", fields: [auditorUserId], references: [id], onDelete: Restrict)
+
+  @@index([traineeId, auditDate])
+  @@index([batchId])
+  @@index([auditorUserId])
+}
+
+model NhtTniCase {
+  id               String              @id @default(uuid()) @db.Uuid
+  traineeId        String              @db.Uuid
+  batchId          String?             @db.Uuid
+  status           TrackerTniStatus    @default(OPEN)
+  startDate        DateTime            @db.Date
+  identifiedGap    String              @default("")
+  trainerId        String              @db.Uuid
+  supportPlan      String              @default("")
+  supportStartDate DateTime?           @db.Date
+  reviewDate       DateTime?           @db.Date
+  trainerRemarks   String              @default("")
+  averageScore     Decimal             @db.Decimal(5, 2)
+  reAuditScore     Decimal?            @db.Decimal(5, 2)
+  finalDecision    TrackerTniDecision?
+  decisionAt       DateTime?
+  decidedByUserId  String?             @db.Uuid
+  createdAt        DateTime            @default(now())
+  updatedAt        DateTime            @updatedAt
+
+  trainee   NhtTrainee @relation(fields: [traineeId], references: [id], onDelete: Cascade)
+  batch     NhtBatch?  @relation(fields: [batchId], references: [id], onDelete: SetNull)
+  trainer   User       @relation("NhtTniTrainer", fields: [trainerId], references: [id], onDelete: Restrict)
+  decidedBy User?      @relation("NhtTniDecider", fields: [decidedByUserId], references: [id], onDelete: SetNull)
+
+  @@index([traineeId, status])
+  @@index([trainerId])
+  @@index([batchId])
 }

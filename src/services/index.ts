@@ -22,3 +22,4 @@ export { announcementService } from "./announcement.service";
 export { certificateEligibilityService } from "./certificate-eligibility.service";
 export { certificateService } from "./certificate.service";
 export { appUsageService } from "./app-usage.service";
+export { trainingTrackerService } from "./training-tracker.service";

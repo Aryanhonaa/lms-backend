@@ -8,3 +8,7 @@ export {
   rejectProgramSchema,
   assignProgramTrainersSchema,
 } from "./program.validators";
+export {
+  createNhtBatchSchema,
+  updateNhtBatchSchema,
+} from "./training-tracker.validators";
