@@ -28,6 +28,7 @@ import { validateBody } from "../middleware/validate-body";
 import { asyncHandler } from "../utils/async-handler";
 import {
   assignmentSubmissionSchema,
+  gradeAttemptSchema,
   reviewSubmissionSchema,
   submitAttemptSchema,
 } from "../validators/assessment.validators";
@@ -145,8 +146,15 @@ trainerRouter.get("/dashboard", asyncHandler(trainerController.getDashboard));
 trainerRouter.get("/search", asyncHandler(trainerController.search));
 trainerRouter.get("/analytics/app-usage", asyncHandler(appUsageController.analytics));
 trainerRouter.post("/uploads/video", videoUpload.single("file"), asyncHandler(uploadController.video));
+trainerRouter.get("/grading-queue", asyncHandler(assessmentController.gradingQueue));
+trainerRouter.get("/grading-queue/count", asyncHandler(assessmentController.gradingCount));
 trainerRouter.get("/assessments", asyncHandler(assessmentController.listForTrainer));
 trainerRouter.get("/assessments/:id", asyncHandler(assessmentController.getForTrainer));
+trainerRouter.post(
+  "/attempts/:id/grade",
+  validateBody(gradeAttemptSchema),
+  asyncHandler(assessmentController.gradeAttempt),
+);
 trainerRouter.get("/assignments", asyncHandler(assignmentController.listForTrainer));
 trainerRouter.get("/assignments/:id", asyncHandler(assignmentController.getForTrainer));
 trainerRouter.get(

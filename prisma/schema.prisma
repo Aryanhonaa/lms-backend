@@ -176,6 +176,11 @@ enum AnnouncementAudience {
   TRAINEES_SELECTED
 }
 
+enum QuestionType {
+  MULTIPLE_CHOICE
+  WRITTEN
+}
+
 enum QuizRevealMode {
   HIDDEN
   IMMEDIATE
@@ -219,6 +224,7 @@ model User {
   enrollmentsCreated     Enrollment[]              @relation("EnrollmentActor")
   createdBatches         ProgramBatch[]            @relation("BatchCreator")
   contentAttachments     ContentAttachment[]       @relation("ContentAttachmentUploader")
+  gradedAttempts         AssessmentAttempt[]       @relation("AttemptGrader")
 
   @@index([role])
   @@index([isActive])
@@ -612,13 +618,16 @@ model Quiz {
 }
 
 model Question {
-  id        String   @id @default(uuid()) @db.Uuid
-  quizId    String   @db.Uuid
-  sortOrder Int
-  prompt    String
-  points    Int      @default(1)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String       @id @default(uuid()) @db.Uuid
+  quizId      String       @db.Uuid
+  sortOrder   Int
+  type        QuestionType @default(MULTIPLE_CHOICE)
+  prompt      String
+  points      Int          @default(1)
+  /// Trainer-only marking guide for written questions. Never sent to trainees.
+  modelAnswer String       @default("")
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   quiz    Quiz               @relation(fields: [quizId], references: [id], onDelete: Cascade)
   options QuestionOption[]
@@ -726,18 +735,24 @@ model AssessmentAttempt {
   submittedAt       DateTime?
   score             Decimal?                 @db.Decimal(5, 2)
   passed            Boolean?
+  /// Written answers await trainer grading; score and passed stay null until then.
+  needsReview       Boolean                  @default(false)
+  gradedAt          DateTime?
+  gradedByUserId    String?                  @db.Uuid
   questionSnapshot  Json
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
 
   enrollment Enrollment          @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
   quiz       Quiz                @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  gradedBy   User?               @relation("AttemptGrader", fields: [gradedByUserId], references: [id], onDelete: SetNull)
   answers    AssessmentAnswer[]
 
   @@unique([enrollmentId, quizId, attemptNumber])
   @@index([enrollmentId])
   @@index([quizId])
   @@index([status])
+  @@index([quizId, needsReview])
 }
 
 model AssessmentAnswer {
@@ -745,8 +760,11 @@ model AssessmentAnswer {
   attemptId          String   @db.Uuid
   questionId         String   @db.Uuid
   selectedOptionIds  String[]
+  textAnswer         String   @default("")
   isCorrect          Boolean  @default(false)
   pointsAwarded      Int      @default(0)
+  needsReview        Boolean  @default(false)
+  trainerComment     String   @default("")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 

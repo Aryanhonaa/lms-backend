@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { QuestionType } from "../src/generated/prisma";
 import {
   quizCanRetry,
   quizClearsProgressionGate,
+  quizUnblocksNextStep,
   type QuizAttemptState,
   type TraineeFacts,
 } from "../src/services/unlock.service";
@@ -19,6 +21,7 @@ function facts(state: QuizAttemptState): TraineeFacts {
 
 const unused: QuizAttemptState = {
   inProgress: false,
+  pendingReview: false,
   passed: false,
   failed: false,
   bestScore: null,
@@ -28,6 +31,7 @@ const unused: QuizAttemptState = {
 
 const passed: QuizAttemptState = {
   inProgress: false,
+  pendingReview: false,
   passed: true,
   failed: false,
   bestScore: 80,
@@ -35,9 +39,20 @@ const passed: QuizAttemptState = {
   attemptsUsed: 1,
 };
 
+const pending: QuizAttemptState = {
+  inProgress: false,
+  pendingReview: true,
+  passed: false,
+  failed: false,
+  bestScore: null,
+  lastSubmittedAt: new Date(),
+  attemptsUsed: 1,
+};
+
 function failed(attemptsUsed: number): QuizAttemptState {
   return {
     inProgress: false,
+    pendingReview: false,
     passed: false,
     failed: true,
     bestScore: 60,
@@ -78,5 +93,32 @@ describe("quiz progression gate", () => {
 
   it("does not clear the gate before the quiz is attempted", () => {
     expect(quizClearsProgressionGate({ id: quizId, maxAttempts: 1 }, facts(unused))).toBe(false);
+  });
+});
+
+describe("written-answer quizzes never block the next step", () => {
+  const writtenQuiz = {
+    id: quizId,
+    maxAttempts: 3,
+    questions: [{ type: QuestionType.MULTIPLE_CHOICE }, { type: QuestionType.WRITTEN }],
+  };
+  const choiceOnlyQuiz = { id: quizId, maxAttempts: 3, questions: [{ type: QuestionType.MULTIPLE_CHOICE }] };
+
+  it("lets the trainee move on while the trainer is grading", () => {
+    expect(quizUnblocksNextStep(writtenQuiz, facts(pending))).toBe(true);
+    expect(quizClearsProgressionGate(writtenQuiz, facts(pending))).toBe(false);
+  });
+
+  it("stays unlocked after a graded fail with retries left", () => {
+    expect(quizUnblocksNextStep(writtenQuiz, facts(failed(1)))).toBe(true);
+    expect(quizCanRetry(3, failed(1))).toBe(true);
+  });
+
+  it("still blocks before the first submission", () => {
+    expect(quizUnblocksNextStep(writtenQuiz, facts(unused))).toBe(false);
+  });
+
+  it("keeps multiple-choice-only quizzes on the normal rule", () => {
+    expect(quizUnblocksNextStep(choiceOnlyQuiz, facts(failed(1)))).toBe(false);
   });
 });

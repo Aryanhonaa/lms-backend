@@ -170,8 +170,10 @@ export const assignmentSchema = z.object({
 
 const questionSchema = z
   .object({
+    type: z.enum(["MULTIPLE_CHOICE", "WRITTEN"]).optional(),
     prompt: z.string().trim().min(1),
-    points: z.number().int().positive().optional(),
+    points: z.number().int().positive().max(100).optional(),
+    modelAnswer: z.string().max(5000).optional(),
     options: z
       .array(
         z.object({
@@ -179,11 +181,23 @@ const questionSchema = z
           isCorrect: z.boolean(),
         }),
       )
-      .min(2)
-      .max(6),
+      .max(6)
+      .optional(),
   })
   .superRefine((question, ctx) => {
-    const correct = question.options.filter((option) => option.isCorrect).length;
+    if (question.type === "WRITTEN") {
+      return;
+    }
+    const options = question.options ?? [];
+    if (options.length < 2) {
+      ctx.addIssue({
+        code: "custom",
+        message: "Each multiple-choice question needs at least 2 options",
+        path: ["options"],
+      });
+      return;
+    }
+    const correct = options.filter((option) => option.isCorrect).length;
     if (correct !== 1) {
       ctx.addIssue({
         code: "custom",
@@ -223,6 +237,14 @@ export const quizSchema = z
       ctx.addIssue({
         code: "custom",
         message: "Questions per attempt cannot exceed the number of questions in the bank",
+        path: ["questionDrawCount"],
+      });
+    }
+    const writtenCount = (quiz.questions ?? []).filter((question) => question.type === "WRITTEN").length;
+    if (quiz.questionDrawCount != null && quiz.questionDrawCount < writtenCount) {
+      ctx.addIssue({
+        code: "custom",
+        message: `Written questions are always included, so questions per attempt must be at least ${writtenCount}`,
         path: ["questionDrawCount"],
       });
     }

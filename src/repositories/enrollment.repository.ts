@@ -9,6 +9,7 @@ const progressFactsInclude = {
       status: true,
       score: true,
       passed: true,
+      needsReview: true,
       submittedAt: true,
     },
   },
