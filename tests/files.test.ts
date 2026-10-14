@@ -20,6 +20,7 @@ const accounts = {
 };
 
 const PDF_BYTES = Buffer.from("%PDF-1.4\n1 0 obj\n<<>>\nendobj\ntrailer\n%%EOF\n");
+const AUDIO_BYTES = Buffer.from("ID3\u0003\u0000\u0000\u0000\u0000\u0000\u0000");
 
 async function login(email: string) {
   const response = await request(app).post("/api/v1/auth/login").send({ email, password });
@@ -143,6 +144,42 @@ describe("stored file uploads, access, and authorization", () => {
     expect(storedResource.fileKey).toBe(uploaded.key);
     expect(storedResource.mimeType).toBe("application/pdf");
     expect(storedResource.storageProvider).toBe(fileStorage.provider);
+
+    const recordingUpload = await request(app)
+      .post("/api/v1/trainer/uploads/files")
+      .set("Cookie", trainerCookie)
+      .field("purpose", "CALL_RECORDING")
+      .field("dayId", day1Id)
+      .attach("file", AUDIO_BYTES, { filename: "team-call.mp3", contentType: "audio/mpeg" });
+    expect(recordingUpload.status).toBe(201);
+    const uploadedRecording = recordingUpload.body.data.file as {
+      key: string;
+      fileName: string;
+      mimeType: string;
+      fileSize: number;
+    };
+    expect(uploadedRecording.key).toContain("/content/call_recording/");
+
+    const recordingRes = await request(app)
+      .post(`/api/v1/trainer/days/${day1Id}/resources`)
+      .set("Cookie", trainerCookie)
+      .send({
+        title: "Team call",
+        kind: "CALL_RECORDING",
+        fileKey: uploadedRecording.key,
+        fileName: uploadedRecording.fileName,
+        mimeType: uploadedRecording.mimeType,
+        fileSize: uploadedRecording.fileSize,
+      });
+    expect(recordingRes.status).toBe(200);
+    const recordingId = recordingRes.body.data.program.weeks
+      .find((week: { id: string }) => week.id === week1Id)
+      .days[0].resources.find((resource: { kind: string }) => resource.kind === "CALL_RECORDING").id as string;
+    const recordingAccess = await request(app)
+      .get(`/api/v1/trainer/items/RESOURCE/${recordingId}/file`)
+      .set("Cookie", trainerCookie);
+    expect(recordingAccess.status).toBe(200);
+    expect(recordingAccess.body.data).toMatchObject({ fileName: "team-call.mp3", mimeType: "audio/mpeg" });
 
     const adminOnDraft = await request(app)
       .get(`/api/v1/admin/items/RESOURCE/${resourceId}/file`)
@@ -294,6 +331,11 @@ describe("stored file uploads, access, and authorization", () => {
     // Stored files never leak a raw storage URL to the client.
     expect(resourceItem.url).toBeUndefined();
     expect(resourceItem.file).toMatchObject({ fileName: "network-security.pdf", mimeType: "application/pdf" });
+    const recordingItem = learnWeek1.days[0].items.find(
+      (item: { type: string; id: string }) => item.type === "RESOURCE" && item.id === recordingId,
+    );
+    expect(recordingItem.kind).toBe("CALL_RECORDING");
+    expect(recordingItem.file).toMatchObject({ fileName: "team-call.mp3", mimeType: "audio/mpeg" });
     const lessonItem = learnWeek1.days[0].items.find((item: { type: string }) => item.type === "LESSON");
     expect(lessonItem.attachments?.[0]?.fileName).toBe("handout.pdf");
 
@@ -308,6 +350,16 @@ describe("stored file uploads, access, and authorization", () => {
       .set("Cookie", traineeCookie);
     expect(traineeStream.status).toBe(200);
     expect(traineeStream.headers["content-type"]).toContain("application/pdf");
+
+    const traineeRecordingAccess = await request(app)
+      .get(`/api/v1/trainee/items/RESOURCE/${recordingId}/file`)
+      .set("Cookie", traineeCookie);
+    expect(traineeRecordingAccess.status).toBe(200);
+    const traineeRecordingStream = await request(app)
+      .get(`/api/v1/trainee/items/RESOURCE/${recordingId}/file/stream`)
+      .set("Cookie", traineeCookie);
+    expect(traineeRecordingStream.status).toBe(200);
+    expect(traineeRecordingStream.headers["content-type"]).toContain("audio/mpeg");
 
     const traineeAttachment = await request(app)
       .get(`/api/v1/trainee/attachments/${attachmentId}/file`)

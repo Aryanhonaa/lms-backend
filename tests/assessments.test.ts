@@ -455,4 +455,44 @@ describe("assessments and assignments", () => {
     expect(new Set(drawnIds).size).toBe(2);
     expect(JSON.stringify(started.body)).not.toContain("isCorrect");
   });
+
+  it("collects answers waiting for review in a cross-course grading queue for trainers", async () => {
+    const trainerCookie = await login(accounts.trainer.email);
+    const traineeCookie = await login(accounts.trainee.email);
+    const attempt = await prisma.assessmentAttempt.findFirstOrThrow({
+      where: { quizId: ids.weeklyId, enrollment: { user: { email: accounts.trainee.email } } },
+    });
+    await prisma.assessmentAttempt.update({
+      where: { id: attempt.id },
+      data: { needsReview: true, score: null, passed: null, gradedAt: null },
+    });
+
+    const count = await request(app).get("/api/v1/trainer/grading-queue/count").set("Cookie", trainerCookie);
+    expect(count.status).toBe(200);
+    expect(count.body.data.pending).toBe(1);
+
+    const queue = await request(app).get("/api/v1/trainer/grading-queue").set("Cookie", trainerCookie);
+    expect(queue.status).toBe(200);
+    expect(queue.body.data.view).toBe("pending");
+    expect(queue.body.data.summary.pending).toBe(1);
+    expect(queue.body.data.items).toHaveLength(1);
+    const item = queue.body.data.items[0];
+    expect(item.attemptId).toBe(attempt.id);
+    expect(item.quiz.id).toBe(ids.weeklyId);
+    expect(item.programId).toBe(ids.programId);
+    expect(item.trainee.email).toBe(accounts.trainee.email);
+
+    const scoped = await request(app)
+      .get(`/api/v1/trainer/grading-queue?programId=${ids.programId}`)
+      .set("Cookie", trainerCookie);
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.data.items).toHaveLength(1);
+
+    const graded = await request(app).get("/api/v1/trainer/grading-queue?view=graded").set("Cookie", trainerCookie);
+    expect(graded.status).toBe(200);
+    expect(graded.body.data.items.map((row: { attemptId: string }) => row.attemptId)).not.toContain(attempt.id);
+
+    const traineeDenied = await request(app).get("/api/v1/trainer/grading-queue").set("Cookie", traineeCookie);
+    expect(traineeDenied.status).toBe(403);
+  });
 });

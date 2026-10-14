@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { FileStorage, FileStoreInput, SignedUpload, StoredFile } from "./file-storage";
 import { assertSafeStorageKey, buildObjectKey } from "./object-keys";
@@ -60,6 +60,17 @@ export const localFileStorage: FileStorage = {
     for (const candidate of candidatePaths(key)) {
       await unlink(candidate).catch(() => undefined);
     }
+  },
+
+  async copy(sourceKey: string, destinationKey: string): Promise<void> {
+    const source = await firstExistingPath(sourceKey);
+    if (!source) {
+      throw new Error(`Stored file not found: ${sourceKey}`);
+    }
+    const visibility = source === resolvePath(sourceKey, "private") ? "private" : "public";
+    const destination = resolvePath(destinationKey, visibility);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await copyFile(source, destination);
   },
 
   async get(key: string): Promise<Buffer | null> {

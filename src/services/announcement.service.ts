@@ -1,4 +1,5 @@
-import { AnnouncementAudience, EnrollmentStatus, Role } from "../generated/prisma";
+import { AnnouncementAudience, Role } from "../generated/prisma";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 import { prisma } from "../config/prisma";
 import { announcementRepository } from "../repositories/engagement.repository";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
@@ -87,7 +88,7 @@ export const announcementService = {
         where: {
           batchId: batch.id,
           userId: { in: traineeIds },
-          status: { not: EnrollmentStatus.WITHDRAWN },
+          status: ACTIVE_STATUS_FILTER,
         },
         select: { userId: true },
       });

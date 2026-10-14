@@ -1,4 +1,4 @@
-import { QuizKind } from "../generated/prisma";
+import { QuestionType, QuizKind, type Prisma } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { curriculumRepository } from "../repositories/curriculum.repository";
 import { fileStorage } from "../storage";
@@ -53,9 +53,11 @@ type QuizInput = {
   revealMode?: "HIDDEN" | "IMMEDIATE" | "SCHEDULED";
   revealAt?: string | Date | null;
   questions?: Array<{
+    type?: "MULTIPLE_CHOICE" | "WRITTEN";
     prompt: string;
     points?: number;
-    options: Array<{ label: string; isCorrect: boolean }>;
+    modelAnswer?: string;
+    options?: Array<{ label: string; isCorrect: boolean }>;
   }>;
 };
 
@@ -173,10 +175,14 @@ function assertQuestions(questions: QuizInput["questions"]) {
   }
 
   for (const question of questions) {
-    if (question.options.length < 2 || question.options.length > 6) {
+    if (question.type === "WRITTEN") {
+      continue;
+    }
+    const options = question.options ?? [];
+    if (options.length < 2 || options.length > 6) {
       throw ApiError.badRequest("Each question needs between 2 and 6 options");
     }
-    const correct = question.options.filter((option) => option.isCorrect).length;
+    const correct = options.filter((option) => option.isCorrect).length;
     if (correct !== 1) {
       throw ApiError.badRequest("Each question needs exactly one correct option");
     }
@@ -186,6 +192,7 @@ function assertQuestions(questions: QuizInput["questions"]) {
 async function assertDrawCount(
   drawCount: number | null | undefined,
   bankSize: number,
+  writtenCount = 0,
 ) {
   if (drawCount == null) {
     return;
@@ -193,20 +200,41 @@ async function assertDrawCount(
   if (drawCount > bankSize) {
     throw ApiError.badRequest("Questions per attempt cannot exceed the number of questions in the bank");
   }
+  if (drawCount < writtenCount) {
+    throw ApiError.badRequest(
+      `Written questions are always included, so questions per attempt must be at least ${writtenCount}`,
+    );
+  }
 }
 
-async function createQuestions(quizId: string, questions: NonNullable<QuizInput["questions"]>) {
+function countWritten(questions: QuizInput["questions"]): number {
+  return (questions ?? []).filter((question) => question.type === QuestionType.WRITTEN).length;
+}
+
+const QUIZ_WRITE_TIMEOUT_MS = 30_000;
+
+async function createQuestions(
+  tx: Prisma.TransactionClient,
+  quizId: string,
+  questions: NonNullable<QuizInput["questions"]>,
+) {
   for (const [questionIndex, question] of questions.entries()) {
-    const created = await prisma.question.create({
+    const written = question.type === "WRITTEN";
+    const created = await tx.question.create({
       data: {
         quizId,
         sortOrder: questionIndex,
+        type: written ? QuestionType.WRITTEN : QuestionType.MULTIPLE_CHOICE,
         prompt: question.prompt,
         points: question.points ?? 1,
+        modelAnswer: written ? (question.modelAnswer ?? "").trim() : "",
       },
     });
 
-    await prisma.questionOption.createMany({
+    if (written || !question.options?.length) {
+      continue;
+    }
+    await tx.questionOption.createMany({
       data: question.options.map((option, optionIndex) => ({
         questionId: created.id,
         sortOrder: optionIndex,
@@ -418,7 +446,7 @@ export const curriculumService = {
       title: string;
       description?: string;
       url?: string;
-      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL";
+      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL" | "CALL_RECORDING";
       required?: boolean;
     } & StoredFileInput,
   ) {
@@ -453,7 +481,7 @@ export const curriculumService = {
       title: string;
       description: string;
       url: string;
-      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL";
+      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL" | "CALL_RECORDING";
       required: boolean;
     }> &
       StoredFileInput,
@@ -758,29 +786,33 @@ export const curriculumService = {
   ) {
     assertQuestions(input.questions);
     if (input.questions?.length) {
-      await assertDrawCount(input.questionDrawCount, input.questions.length);
+      await assertDrawCount(input.questionDrawCount, input.questions.length, countWritten(input.questions));
     }
-    const quiz = await prisma.quiz.create({
-      data: {
-        kind: input.kind,
-        title: input.title,
-        description: input.description ?? "",
-        passingScore: input.passingScore ?? 70,
-        timeLimitMin: input.timeLimitMin,
-        maxAttempts: input.maxAttempts,
-        randomized: input.randomized ?? false,
-        questionDrawCount: input.questionDrawCount ?? null,
-        ...quizRevealData(input),
-        dayId: input.dayId,
-        weekId: input.weekId,
-        milestoneId: input.milestoneId,
-        programId: input.kind === QuizKind.FINAL_EXAM ? programId : input.programId,
+    await prisma.$transaction(
+      async (tx) => {
+        const quiz = await tx.quiz.create({
+          data: {
+            kind: input.kind,
+            title: input.title,
+            description: input.description ?? "",
+            passingScore: input.passingScore ?? 70,
+            timeLimitMin: input.timeLimitMin,
+            maxAttempts: input.maxAttempts,
+            randomized: input.randomized ?? false,
+            questionDrawCount: input.questionDrawCount ?? null,
+            ...quizRevealData(input),
+            dayId: input.dayId,
+            weekId: input.weekId,
+            milestoneId: input.milestoneId,
+            programId: input.kind === QuizKind.FINAL_EXAM ? programId : input.programId,
+          },
+        });
+        if (input.questions?.length) {
+          await createQuestions(tx, quiz.id, input.questions);
+        }
       },
-    });
-
-    if (input.questions?.length) {
-      await createQuestions(quiz.id, input.questions);
-    }
+      { timeout: QUIZ_WRITE_TIMEOUT_MS },
+    );
 
     return programService.getTreeForUser(user, programId);
   },
@@ -803,24 +835,32 @@ export const curriculumService = {
     const bankSize = input.questions
       ? input.questions.length
       : await prisma.question.count({ where: { quizId } });
-    await assertDrawCount(input.questionDrawCount, bankSize);
-    await prisma.quiz.update({
-      where: { id: quizId },
-      data: {
-        title: input.title,
-        description: input.description,
-        passingScore: input.passingScore,
-        timeLimitMin: input.timeLimitMin,
-        maxAttempts: input.maxAttempts,
-        randomized: input.randomized,
-        questionDrawCount: input.questionDrawCount,
-        ...quizRevealData(input, { revealMode: quiz.revealMode, revealAt: quiz.revealAt }),
+    const writtenCount = input.questions
+      ? countWritten(input.questions)
+      : await prisma.question.count({ where: { quizId, type: QuestionType.WRITTEN } });
+    await assertDrawCount(input.questionDrawCount, bankSize, writtenCount);
+    await prisma.$transaction(
+      async (tx) => {
+        await tx.quiz.update({
+          where: { id: quizId },
+          data: {
+            title: input.title,
+            description: input.description,
+            passingScore: input.passingScore,
+            timeLimitMin: input.timeLimitMin,
+            maxAttempts: input.maxAttempts,
+            randomized: input.randomized,
+            questionDrawCount: input.questionDrawCount,
+            ...quizRevealData(input, { revealMode: quiz.revealMode, revealAt: quiz.revealAt }),
+          },
+        });
+        if (input.questions) {
+          await tx.question.deleteMany({ where: { quizId } });
+          await createQuestions(tx, quizId, input.questions);
+        }
       },
-    });
-    if (input.questions) {
-      await prisma.question.deleteMany({ where: { quizId } });
-      await createQuestions(quizId, input.questions);
-    }
+      { timeout: QUIZ_WRITE_TIMEOUT_MS },
+    );
     return programService.getTreeForUser(user, programId);
   },
 

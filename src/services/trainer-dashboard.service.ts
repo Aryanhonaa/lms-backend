@@ -1,10 +1,10 @@
 import {
   AssignmentSubmissionStatus,
-  EnrollmentStatus,
   InterventionStatus,
   ProgramStatus,
 } from "../generated/prisma";
 import { prisma } from "../config/prisma";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 import { calendarService, type CalendarEventType } from "./calendar.service";
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
@@ -157,7 +157,7 @@ export const trainerDashboardService = {
       prisma.enrollment.findMany({
         where: {
           programId: { in: programIds },
-          status: { not: EnrollmentStatus.WITHDRAWN },
+          status: ACTIVE_STATUS_FILTER,
           user: { OR: [{ name: contains }, { email: contains }] },
         },
         select: {
@@ -248,7 +248,7 @@ async function loadStatistics(programIds: string[]) {
     prisma.program.count({ where: { id: { in: programIds } } }),
     prisma.program.count({ where: { id: { in: programIds }, status: { in: ACTIVE_PROGRAM } } }),
     prisma.enrollment.findMany({
-      where: { programId: { in: programIds }, status: { not: EnrollmentStatus.WITHDRAWN } },
+      where: { programId: { in: programIds }, status: ACTIVE_STATUS_FILTER },
       select: { userId: true },
       distinct: ["userId"],
     }),
@@ -288,7 +288,7 @@ async function loadPrograms(programIds: string[]) {
       startDate: true,
       endDate: true,
       enrollments: {
-        where: { status: { not: EnrollmentStatus.WITHDRAWN } },
+        where: { status: ACTIVE_STATUS_FILTER },
         select: { overallProgress: true, courseOutcome: true },
       },
     },

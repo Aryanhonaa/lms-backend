@@ -1,8 +1,10 @@
-import { EnrollmentStatus, Prisma, ProgramStatus, Role } from "../generated/prisma";
+import { AttendanceStatus, Prisma, ProgramStatus, Role } from "../generated/prisma";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import { prisma } from "../config/prisma";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programRepository } from "../repositories/program.repository";
 import { userRepository } from "../repositories/user.repository";
+import { enrollmentActivity } from "./enrollment-activity";
 import { programService } from "./program.service";
 import { traineeRosterCounts, type TraineeRosterRow } from "./trainee-roster";
 import type { AuthUser } from "../types";
@@ -47,7 +49,7 @@ export const enrollmentService = {
       : await enrollmentRepository.findByProgram(programId);
     const enrolled = new Map(
       enrolledRows
-        .filter((row) => row.status !== EnrollmentStatus.WITHDRAWN)
+        .filter((row) => !isExitedEnrollment(row.status))
         .map((row) => [row.userId, row.status]),
     );
 
@@ -91,6 +93,17 @@ export const enrollmentService = {
           : null,
         trainee: { id: row.user.id, name: row.user.name, email: row.user.email },
         batch: row.batch ? { id: row.batch.id, name: row.batch.name } : null,
+        canRemove:
+          enrollmentActivity(
+            {
+              completions: row.completions.length,
+              assessmentAttempts: row.assessmentAttempts.length,
+              assignmentSubmissions: row.assignmentSubmissions.length,
+              feedback: 0,
+              attendances: row.attendances.filter((item) => item.status !== AttendanceStatus.ABSENT).length,
+            },
+            false,
+          ).length === 0,
       };
     });
     return { trainees, counts: traineeRosterCounts(trainees) };
@@ -169,7 +182,13 @@ export const enrollmentService = {
     };
   },
 
-  async enrollTrainees(user: AuthUser, programId: string, traineeIds: string[], batchId: string) {
+  async enrollTrainees(
+    user: AuthUser,
+    programId: string,
+    traineeIds: string[],
+    batchId: string,
+    joinedAt?: Date,
+  ) {
     if (user.role !== Role.TRAINER) {
       throw ApiError.forbidden("You don't have permission to enroll trainees in this program.");
     }
@@ -212,7 +231,7 @@ export const enrollmentService = {
       }
 
       const existing = await enrollmentRepository.findEnrollment(batch.id, traineeId);
-      if (existing && existing.status !== EnrollmentStatus.WITHDRAWN) {
+      if (existing && !isExitedEnrollment(existing.status)) {
         alreadyEnrolled.push({ userId: traineeId, name: target.name });
         continue;
       }
@@ -224,13 +243,14 @@ export const enrollmentService = {
 
       try {
         if (existing) {
-          await enrollmentRepository.reactivate(existing.id, user.id);
+          await enrollmentRepository.reactivate(existing.id, user.id, joinedAt);
         } else {
           await enrollmentRepository.create({
             programId,
             userId: traineeId,
             enrolledByUserId: user.id,
             batchId: batch.id,
+            ...(joinedAt ? { joinedAt } : {}),
           });
         }
         remaining -= 1;

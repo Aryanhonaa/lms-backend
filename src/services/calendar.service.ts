@@ -1,4 +1,4 @@
-import { QuizKind } from "../generated/prisma";
+import { AnnouncementAudience, QuizKind } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programRepository } from "../repositories/program.repository";
@@ -6,10 +6,21 @@ import { enrollmentService } from "./enrollment.service";
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 
-export type CalendarEventType = "SESSION" | "EXAM" | "ASSIGNMENT" | "MILESTONE" | "DEADLINE" | "PROGRAM";
+export type CalendarEventType =
+  | "SESSION"
+  | "EXAM"
+  | "QUIZ"
+  | "ASSIGNMENT"
+  | "TASK"
+  | "NOTIFICATION"
+  | "MILESTONE"
+  | "DEADLINE"
+  | "PROGRAM"
+  | "HOLIDAY";
 
-type CalendarEvent = {
+export type CalendarEvent = {
   id: string;
   type: CalendarEventType;
   title: string;
@@ -17,6 +28,11 @@ type CalendarEvent = {
   endsAt: string | null;
   program: { id: string; title: string };
   sourceId: string;
+  description?: string;
+  batchIds?: string[];
+  traineeIds?: string[];
+  batch?: { id: string; name: string } | null;
+  trainee?: { id: string; name: string } | null;
 };
 
 function event(
@@ -26,6 +42,7 @@ function event(
   startsAt: Date | null,
   program: { id: string; title: string },
   endsAt: Date | null = null,
+  details: Pick<CalendarEvent, "description" | "batchIds" | "traineeIds" | "batch" | "trainee"> = {},
 ): CalendarEvent | null {
   if (!startsAt) {
     return null;
@@ -39,6 +56,7 @@ function event(
     endsAt: endsAt ? endsAt.toISOString() : null,
     program: { id: program.id, title: program.title },
     sourceId,
+    ...details,
   };
 }
 
@@ -140,7 +158,7 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
           programEnd: program.endDate,
           programStart: program.startDate,
         });
-        const row = event("EXAM", quiz.id, quiz.title, at, programRef);
+        const row = event(quiz.kind === QuizKind.WEEKLY_QUIZ ? "QUIZ" : "EXAM", quiz.id, quiz.title, at, programRef);
         if (row) {
           events.push(row);
         }
@@ -168,7 +186,7 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
             programEnd: program.endDate,
             programStart: program.startDate,
           });
-          const row = event("EXAM", quiz.id, quiz.title, at, programRef);
+          const row = event(quiz.kind === QuizKind.WEEKLY_QUIZ ? "QUIZ" : "EXAM", quiz.id, quiz.title, at, programRef);
           if (row) {
             events.push(row);
           }
@@ -192,7 +210,13 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
           programEnd: program.endDate,
           programStart: program.startDate,
         });
-        const examEvent = event("EXAM", milestone.exam.id, milestone.exam.title, examAt, programRef);
+        const examEvent = event(
+          milestone.exam.kind === QuizKind.WEEKLY_QUIZ ? "QUIZ" : "EXAM",
+          milestone.exam.id,
+          milestone.exam.title,
+          examAt,
+          programRef,
+        );
         if (examEvent) {
           events.push(examEvent);
         }
@@ -208,7 +232,7 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
         programEnd: program.endDate,
         programStart: program.startDate,
       });
-      const row = event("EXAM", quiz.id, quiz.title, at, programRef);
+      const row = event(quiz.kind === QuizKind.WEEKLY_QUIZ ? "QUIZ" : "EXAM", quiz.id, quiz.title, at, programRef);
       if (row) {
         events.push(row);
       }
@@ -218,17 +242,69 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
   if (traineeUserId) {
     const enrollments = await enrollmentRepository.findByUser(traineeUserId);
     const mine = enrollments.filter((row) => programIds.includes(row.programId));
-    const requirements = await prisma.individualRequirement.findMany({
-      where: { enrollmentId: { in: mine.map((row) => row.id) }, deadline: { not: null } },
-      include: { enrollment: { include: { program: { select: { id: true, title: true } } } } },
-    });
+    const [requirements, announcements] = await Promise.all([
+      mine.length
+        ? prisma.individualRequirement.findMany({
+            where: { enrollmentId: { in: mine.map((row) => row.id) }, deadline: { not: null } },
+            include: {
+              enrollment: {
+                include: {
+                  program: { select: { id: true, title: true } },
+                  batch: { select: { id: true, name: true } },
+                },
+              },
+            },
+          })
+        : Promise.resolve([]),
+      prisma.announcement.findMany({
+        where: {
+          OR: [
+            { audience: { in: [AnnouncementAudience.EVERYONE, AnnouncementAudience.TRAINEES] } },
+            ...(programIds.length ? [{ audience: AnnouncementAudience.PROGRAM, programId: { in: programIds } }] : []),
+            { audience: AnnouncementAudience.TRAINEES_SELECTED, recipients: { some: { userId: traineeUserId } } },
+          ],
+        },
+        select: {
+          id: true,
+          title: true,
+          body: true,
+          createdAt: true,
+          program: { select: { id: true, title: true } },
+          batch: { select: { id: true, name: true } },
+        },
+        orderBy: { createdAt: "asc" },
+      }),
+    ]);
     for (const requirement of requirements) {
       const row = event(
-        "DEADLINE",
+        "TASK",
         requirement.id,
         requirement.title,
         requirement.deadline,
         requirement.enrollment.program,
+        null,
+        {
+          description: requirement.description || requirement.trainerMessage,
+          batchIds: [requirement.enrollment.batchId],
+          batch: requirement.enrollment.batch,
+        },
+      );
+      if (row) {
+        events.push(row);
+      }
+    }
+    for (const announcement of announcements) {
+      const row = event(
+        "NOTIFICATION",
+        announcement.id,
+        announcement.title,
+        announcement.createdAt,
+        announcement.program ?? { id: "", title: announcement.batch?.name ?? "General" },
+        null,
+        {
+          description: announcement.body,
+          ...(announcement.batch ? { batchIds: [announcement.batch.id], batch: announcement.batch } : {}),
+        },
       );
       if (row) {
         events.push(row);
@@ -240,27 +316,190 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
   return events;
 }
 
+async function trainerCalendar(userId: string) {
+  const programIds = await programService.listProgramIdsForTrainer(userId);
+  const [baseEvents, holidays, courses, batches, enrollments, requirements, announcements] = await Promise.all([
+    eventsForPrograms(programIds),
+    holidayEvents(),
+    prisma.program.findMany({
+      where: { id: { in: programIds } },
+      select: { id: true, title: true },
+      orderBy: { title: "asc" },
+    }),
+    prisma.programBatch.findMany({
+      where: { programId: { in: programIds } },
+      select: { id: true, programId: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.enrollment.findMany({
+      where: { programId: { in: programIds }, status: ACTIVE_STATUS_FILTER },
+      select: {
+        userId: true,
+        programId: true,
+        user: { select: { id: true, name: true } },
+        batch: { select: { id: true, name: true } },
+      },
+      orderBy: [{ user: { name: "asc" } }],
+    }),
+    programIds.length
+      ? prisma.individualRequirement.findMany({
+          where: {
+            deadline: { not: null },
+            enrollment: { programId: { in: programIds }, status: ACTIVE_STATUS_FILTER },
+          },
+          select: {
+            id: true,
+            title: true,
+            deadline: true,
+            enrollment: {
+              select: {
+                program: { select: { id: true, title: true } },
+                batch: { select: { id: true, name: true } },
+                user: { select: { id: true, name: true } },
+              },
+            },
+          },
+        })
+      : Promise.resolve([]),
+    prisma.announcement.findMany({
+      where: {
+        OR: [
+          { audience: { in: [AnnouncementAudience.EVERYONE, AnnouncementAudience.TRAINERS] } },
+          ...(programIds.length ? [{ programId: { in: programIds } }] : []),
+        ],
+      },
+      select: {
+        id: true,
+        title: true,
+        createdAt: true,
+        program: { select: { id: true, title: true } },
+        batch: { select: { id: true, name: true } },
+        recipients: { select: { userId: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    }),
+  ]);
+
+  const batchesByProgram = new Map<string, typeof batches>();
+  for (const batch of batches) {
+    const list = batchesByProgram.get(batch.programId) ?? [];
+    list.push(batch);
+    batchesByProgram.set(batch.programId, list);
+  }
+  const enrollmentsByProgram = new Map<string, typeof enrollments>();
+  for (const enrollment of enrollments) {
+    const list = enrollmentsByProgram.get(enrollment.programId) ?? [];
+    list.push(enrollment);
+    enrollmentsByProgram.set(enrollment.programId, list);
+  }
+
+  const events: CalendarEvent[] = baseEvents.map((row) => {
+    if (!row.program.id) {
+      return row;
+    }
+    const courseBatches = batchesByProgram.get(row.program.id) ?? [];
+    const courseEnrollments = enrollmentsByProgram.get(row.program.id) ?? [];
+    return {
+      ...row,
+      batchIds: courseBatches.map((batch) => batch.id),
+      traineeIds: courseEnrollments.map((enrollment) => enrollment.userId),
+    };
+  });
+
+  for (const requirement of requirements) {
+    const { enrollment } = requirement;
+    const row = event("TASK", requirement.id, requirement.title, requirement.deadline, enrollment.program, null, {
+      batchIds: [enrollment.batch.id],
+      traineeIds: [enrollment.user.id],
+      batch: enrollment.batch,
+      trainee: enrollment.user,
+    });
+    if (row) {
+      events.push(row);
+    }
+  }
+
+  for (const announcement of announcements) {
+    const program = announcement.program ?? { id: "", title: "General" };
+    const relatedEnrollments = announcement.program
+      ? enrollmentsByProgram.get(announcement.program.id) ?? []
+      : [];
+    const row = event("NOTIFICATION", announcement.id, announcement.title, announcement.createdAt, program, null, {
+      ...(announcement.batch ? { batchIds: [announcement.batch.id], batch: announcement.batch } : {}),
+      ...(announcement.program && !announcement.batch
+        ? { batchIds: (batchesByProgram.get(announcement.program.id) ?? []).map((batch) => batch.id) }
+        : {}),
+      traineeIds: announcement.recipients.length
+        ? announcement.recipients.map((recipient) => recipient.userId)
+        : relatedEnrollments.map((enrollment) => enrollment.userId),
+    });
+    if (row) {
+      events.push(row);
+    }
+  }
+
+  return {
+    events: withHolidays(events, holidays),
+    filters: {
+      courses,
+      batches,
+      trainees: enrollments.map((enrollment) => ({
+        id: enrollment.user.id,
+        name: enrollment.user.name,
+        programId: enrollment.programId,
+        batchId: enrollment.batch.id,
+        batchName: enrollment.batch.name,
+      })),
+    },
+  };
+}
+
+async function holidayEvents(): Promise<CalendarEvent[]> {
+  const holidays = await prisma.holiday.findMany({ orderBy: { date: "asc" } });
+  return holidays.map((row) => ({
+    id: `holiday:${row.id}`,
+    type: "HOLIDAY",
+    title: row.name,
+    startsAt: row.date.toISOString(),
+    endsAt: null,
+    program: { id: "", title: "Public holiday" },
+    sourceId: row.id,
+  }));
+}
+
+function withHolidays(events: CalendarEvent[], holidays: CalendarEvent[]): CalendarEvent[] {
+  return [...events, ...holidays].sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+}
+
+async function programEventsForUser(user: AuthUser): Promise<CalendarEvent[]> {
+  if (user.role === "TRAINEE") {
+    await enrollmentService.ensureVisibleEnrollments(user.id);
+    const enrollments = await enrollmentRepository.findByUser(user.id);
+    const programIds = enrollments
+      .filter((row) => row.program.status === "APPROVED" || row.program.status === "PUBLISHED")
+      .map((row) => row.programId);
+    return eventsForPrograms(programIds, user.id);
+  }
+
+  if (user.role === "SUPER_ADMIN" || user.role === "ADMIN") {
+    const programs = await programRepository.findCatalog();
+    return eventsForPrograms(programs.map((row) => row.id));
+  }
+
+  if (user.role !== "TRAINER") {
+    throw ApiError.forbidden();
+  }
+
+  const programIds = await programService.listProgramIdsForTrainer(user.id);
+  return eventsForPrograms(programIds);
+}
+
 export const calendarService = {
   async listForUser(user: AuthUser) {
-    if (user.role === "TRAINEE") {
-      await enrollmentService.ensureVisibleEnrollments(user.id);
-      const enrollments = await enrollmentRepository.findByUser(user.id);
-      const programIds = enrollments
-        .filter((row) => row.program.status === "APPROVED" || row.program.status === "PUBLISHED")
-        .map((row) => row.programId);
-      return { events: await eventsForPrograms(programIds, user.id) };
+    if (user.role === "TRAINER") {
+      return trainerCalendar(user.id);
     }
-
-    if (user.role === "SUPER_ADMIN" || user.role === "ADMIN") {
-      const programs = await programRepository.findCatalog();
-      return { events: await eventsForPrograms(programs.map((row) => row.id)) };
-    }
-
-    if (user.role !== "TRAINER") {
-      throw ApiError.forbidden();
-    }
-
-    const programIds = await programService.listProgramIdsForTrainer(user.id);
-    return { events: await eventsForPrograms(programIds) };
+    const [events, holidays] = await Promise.all([programEventsForUser(user), holidayEvents()]);
+    return { events: withHolidays(events, holidays) };
   },
 };

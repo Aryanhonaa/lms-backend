@@ -1242,6 +1242,7 @@ export const progressService = {
       status: Parameters<typeof buildFacts>[0]["attempts"][number]["status"];
       score: unknown;
       passed: boolean | null;
+      needsReview?: boolean;
       submittedAt: Date | null;
     }>;
     assignmentSubmissions: Array<{
@@ -1260,6 +1261,7 @@ export const progressService = {
         status: row.status,
         score: toNumber(row.score),
         passed: row.passed,
+        needsReview: row.needsReview,
         submittedAt: row.submittedAt,
       })),
       submissions: enrollment.assignmentSubmissions,

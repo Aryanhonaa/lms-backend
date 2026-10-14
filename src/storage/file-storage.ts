@@ -28,6 +28,8 @@ export type FileStorage = {
   readonly provider: string;
   save(input: FileStoreInput, publicOrigin: string): Promise<StoredFile>;
   delete(key: string): Promise<void>;
+  /** Server-side copy so large media never has to be buffered in memory. */
+  copy(sourceKey: string, destinationKey: string): Promise<void>;
   get(key: string): Promise<Buffer | null>;
   exists(key: string): Promise<boolean>;
   signedDownloadUrl(key: string, options?: { expiresInSeconds?: number; fileName?: string; mimeType?: string }): Promise<string | null>;

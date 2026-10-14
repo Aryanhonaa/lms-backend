@@ -1,5 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
-import { CertificateStatus, EnrollmentStatus } from "../generated/prisma";
+import { CertificateStatus } from "../generated/prisma";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import { env } from "../config/env";
 import { certificateRenderer, type CertificateDocument } from "../certificates/certificate-renderer";
 import { certificateRepository } from "../repositories/certificate.repository";
@@ -181,7 +182,7 @@ export const certificateService = {
     const enrollments = await enrollmentRepository.findByUser(user.id);
     const pendingReviews: PendingCourseReview[] = [];
     for (const enrollment of enrollments) {
-      if (enrollment.status === EnrollmentStatus.WITHDRAWN) {
+      if (isExitedEnrollment(enrollment.status)) {
         continue;
       }
       const issued = await this.issueIfEligible(enrollment.id);
