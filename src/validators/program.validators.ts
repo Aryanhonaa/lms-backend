@@ -19,6 +19,10 @@ export const createProgramSchema = z.object({
 
 export const updateProgramSchema = createProgramSchema.partial();
 
+export const duplicateProgramSchema = z.object({
+  title: z.string().trim().min(1).max(200).optional(),
+});
+
 export const rejectProgramSchema = z.object({
   reason: z.string().trim().min(1),
 });
@@ -33,6 +37,7 @@ export const addProgramTrainerSchema = z.object({
 
 export const enrollTraineesSchema = z.object({
   traineeIds: z.array(z.string().uuid()).min(1).max(25),
+  joinedAt: z.iso.date().optional(),
 });
 
 export const enrollIntoProgramSchema = enrollTraineesSchema.extend({
@@ -40,11 +45,18 @@ export const enrollIntoProgramSchema = enrollTraineesSchema.extend({
 });
 
 export const batchSchema = z.object({
-  name: z.string().trim().min(1).max(80),
+  name: z.string().trim().max(80).optional(),
   description: z.string().trim().optional(),
   capacity: z.number().int().min(1).max(200).optional(),
   startDate: optionalDate,
   endDate: optionalDate,
+  lineOfBusiness: z.enum(["VOICE", "NON_VOICE"]).optional().nullable(),
+  month: z.number().int().min(1).max(12).optional().nullable(),
+  year: z.number().int().min(2000).max(2100).optional().nullable(),
+  batchNumber: z.number().int().min(1).max(999).optional().nullable(),
+  salesTrainerId: z.string().uuid().optional().nullable(),
+  supportTrainerId: z.string().uuid().optional().nullable(),
+  actualCompletionDate: optionalDate,
 });
 
 export const weekSchema = z.object({
@@ -98,7 +110,7 @@ export const resourceSchema = z
     title: z.string().trim().min(1),
     description: z.string().optional(),
     url: z.string().trim().min(1).optional(),
-    kind: z.enum(["DOCUMENT", "ARTICLE", "GITHUB", "YOUTUBE", "WEBSITE", "TUTORIAL"]),
+    kind: z.enum(["DOCUMENT", "ARTICLE", "GITHUB", "YOUTUBE", "WEBSITE", "TUTORIAL", "CALL_RECORDING"]),
     required: z.boolean().optional(),
     ...storedFileFields,
   })
@@ -110,7 +122,7 @@ export const updateResourceSchema = z.object({
   title: z.string().trim().min(1).optional(),
   description: z.string().optional(),
   url: z.string().trim().min(1).optional(),
-  kind: z.enum(["DOCUMENT", "ARTICLE", "GITHUB", "YOUTUBE", "WEBSITE", "TUTORIAL"]).optional(),
+  kind: z.enum(["DOCUMENT", "ARTICLE", "GITHUB", "YOUTUBE", "WEBSITE", "TUTORIAL", "CALL_RECORDING"]).optional(),
   required: z.boolean().optional(),
   ...storedFileFields,
 });
@@ -134,7 +146,7 @@ export const updateReelSchema = z.object({
 });
 
 export const uploadTicketSchema = z.object({
-  purpose: z.enum(["VIDEO", "REEL", "RESOURCE", "LESSON_ATTACHMENT", "ASSIGNMENT_ATTACHMENT"]),
+  purpose: z.enum(["VIDEO", "REEL", "RESOURCE", "CALL_RECORDING", "LESSON_ATTACHMENT", "ASSIGNMENT_ATTACHMENT"]),
   dayId: z.string().uuid(),
   contentId: z.string().uuid().optional(),
   fileName: z.string().trim().min(1).max(255),

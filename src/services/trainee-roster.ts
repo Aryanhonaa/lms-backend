@@ -13,6 +13,7 @@ export type TraineeRosterRow = {
   enrolledBy: { id: string; name: string; email: string } | null;
   trainee: { id: string; name: string; email: string };
   batch: { id: string; name: string } | null;
+  canRemove: boolean;
 };
 
 export function traineeRosterCounts(trainees: Array<{ courseOutcome: string; progress: number }>) {

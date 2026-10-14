@@ -1,5 +1,6 @@
 import { CourseOutcome, EnrollmentStatus } from "../generated/prisma";
 import { prisma } from "../config/prisma";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 
 const progressFactsInclude = {
   completions: true,
@@ -40,7 +41,7 @@ export const enrollmentRepository = {
     return prisma.enrollment.findMany({
       where: {
         programId,
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
         ...(batchId ? { batchId } : {}),
       },
       include: {
@@ -53,7 +54,7 @@ export const enrollmentRepository = {
 
   findByUser(userId: string) {
     return prisma.enrollment.findMany({
-      where: { userId },
+      where: { userId, status: ACTIVE_STATUS_FILTER },
       include: {
         program: true,
         batch: { select: { id: true, name: true, capacity: true, startDate: true, endDate: true } },
@@ -64,7 +65,7 @@ export const enrollmentRepository = {
 
   findByUserForReview(userId: string) {
     return prisma.enrollment.findMany({
-      where: { userId, status: { not: EnrollmentStatus.WITHDRAWN } },
+      where: { userId, status: ACTIVE_STATUS_FILTER },
       include: {
         program: { select: { id: true, title: true, status: true, category: true } },
         batch: { select: { id: true, name: true } },
@@ -99,7 +100,7 @@ export const enrollmentRepository = {
       where: {
         programId,
         userId,
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
         ...(batchId ? { batchId } : {}),
       },
       include: progressFactsInclude,
@@ -118,7 +119,7 @@ export const enrollmentRepository = {
     return prisma.enrollment.findMany({
       where: {
         programId,
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
         ...(batchId ? { batchId } : {}),
       },
       include: {
@@ -162,7 +163,7 @@ export const enrollmentRepository = {
     return prisma.enrollment.count({
       where: {
         programId,
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
       },
     });
   },
@@ -171,7 +172,7 @@ export const enrollmentRepository = {
     return prisma.enrollment.count({
       where: {
         batchId,
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
       },
     });
   },
@@ -183,16 +184,28 @@ export const enrollmentRepository = {
     });
   },
 
-  create(data: { programId: string; userId: string; enrolledByUserId?: string | null; batchId: string }) {
+  create(data: {
+    programId: string;
+    userId: string;
+    enrolledByUserId?: string | null;
+    batchId: string;
+    joinedAt?: Date;
+  }) {
     return prisma.enrollment.create({ data });
   },
 
-  reactivate(id: string, enrolledByUserId: string) {
+  reactivate(id: string, enrolledByUserId: string, joinedAt?: Date) {
     return prisma.enrollment.update({
       where: { id },
       data: {
         status: EnrollmentStatus.ACTIVE,
         enrolledByUserId,
+        joinedAt: joinedAt ?? new Date(),
+        exitedAt: null,
+        exitReason: "",
+        exitedByUserId: null,
+        handedOverAt: null,
+        teamId: null,
       },
     });
   },
@@ -220,7 +233,7 @@ export const enrollmentRepository = {
     },
   ) {
     return prisma.enrollment.updateMany({
-      where: { id: enrollmentId },
+      where: { id: enrollmentId, status: ACTIVE_STATUS_FILTER },
       data: input,
     });
   },

@@ -1,5 +1,6 @@
 import type { ProgramStatus } from "../generated/prisma";
 import type { Request, Response } from "express";
+import { programDuplicateService } from "../services/program-duplicate.service";
 import { programService } from "../services/program.service";
 import { sendSuccess } from "../utils/api-response";
 import { routeParam } from "../utils/route-param";
@@ -71,6 +72,11 @@ export const programController = {
       req.body.trainerIds,
     );
     sendSuccess(res, { program });
+  },
+
+  async duplicate(req: Request, res: Response): Promise<void> {
+    const program = await programDuplicateService.duplicate(req.user!, routeParam(req, "programId"), req.body);
+    sendSuccess(res, { program }, 201);
   },
 
   async remove(req: Request, res: Response): Promise<void> {

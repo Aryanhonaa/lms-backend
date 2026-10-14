@@ -14,6 +14,7 @@ import {
   confirmUploadSchema,
   createProgramSchema,
   daySchema,
+  duplicateProgramSchema,
   enrollIntoProgramSchema,
   enrollTraineesSchema,
   lessonSchema,
@@ -78,6 +79,11 @@ trainerProgramRouter.patch(
   asyncHandler(programController.update),
 );
 trainerProgramRouter.delete("/programs/:programId", asyncHandler(programController.remove));
+trainerProgramRouter.post(
+  "/programs/:programId/duplicate",
+  validateBody(duplicateProgramSchema),
+  asyncHandler(programController.duplicate),
+);
 
 trainerProgramRouter.post(
   "/programs/:programId/weeks",

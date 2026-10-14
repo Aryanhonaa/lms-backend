@@ -1,4 +1,5 @@
-import { EnrollmentStatus, Prisma, ProgramStatus, Role } from "../generated/prisma";
+import { Prisma, ProgramStatus, Role } from "../generated/prisma";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 import { env } from "../config/env";
 import { prisma } from "../config/prisma";
 import { appUsageRepository } from "../repositories/app-usage.repository";
@@ -197,7 +198,7 @@ async function resolveContext(userId: string, input: UsageHeartbeatInput) {
   const enrollment = await prisma.enrollment.findFirst({
     where: {
       userId,
-      status: { not: EnrollmentStatus.WITHDRAWN },
+      status: ACTIVE_STATUS_FILTER,
       ...(input.batchId ? { batchId: input.batchId } : {}),
       ...(input.programId ? { programId: input.programId } : {}),
     },
@@ -235,7 +236,7 @@ async function listScopedTrainees(viewer: AuthUser, programId?: string, batchId?
     }
     const enrollments = await prisma.enrollment.findMany({
       where: {
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
         programId: programId ?? { in: programIds },
         ...(batchId ? { batchId } : {}),
       },
@@ -259,7 +260,7 @@ async function listScopedTrainees(viewer: AuthUser, programId?: string, batchId?
   if (programId || batchId) {
     const enrollments = await prisma.enrollment.findMany({
       where: {
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
         ...(programId ? { programId } : {}),
         ...(batchId ? { batchId } : {}),
       },

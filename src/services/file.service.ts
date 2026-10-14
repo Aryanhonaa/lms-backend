@@ -44,6 +44,7 @@ function assertPurpose(value: unknown): UploadPurpose {
     "VIDEO",
     "REEL",
     "RESOURCE",
+    "CALL_RECORDING",
     "LESSON_ATTACHMENT",
     "ASSIGNMENT_ATTACHMENT",
   ];
@@ -53,7 +54,7 @@ function assertPurpose(value: unknown): UploadPurpose {
   return purpose as UploadPurpose;
 }
 
-function folderForPurpose(purpose: UploadPurpose, scope: { programId: string; weekId?: string; dayId?: string; contentId?: string }): string {
+export function folderForPurpose(purpose: UploadPurpose, scope: { programId: string; weekId?: string; dayId?: string; contentId?: string }): string {
   const base = `programs/${scope.programId}`;
   const week = scope.weekId ? `${base}/weeks/${scope.weekId}` : base;
   const day = scope.dayId ? `${week}/days/${scope.dayId}` : week;
@@ -287,7 +288,7 @@ export const fileService = {
     }
 
     const key = buildObjectKey(folderForPurpose(purpose, { ...scope, contentId: input.contentId }), fileName, mimeType);
-    const directEligible = (purpose === "VIDEO" || purpose === "REEL") && fileSize >= 4 * 1024 * 1024;
+    const directEligible = (purpose === "VIDEO" || purpose === "REEL" || purpose === "CALL_RECORDING") && fileSize >= 4 * 1024 * 1024;
     if (!directEligible) {
       return { direct: false as const, key: null, upload: null };
     }

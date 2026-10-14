@@ -446,7 +446,7 @@ export const curriculumService = {
       title: string;
       description?: string;
       url?: string;
-      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL";
+      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL" | "CALL_RECORDING";
       required?: boolean;
     } & StoredFileInput,
   ) {
@@ -481,7 +481,7 @@ export const curriculumService = {
       title: string;
       description: string;
       url: string;
-      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL";
+      kind: "DOCUMENT" | "ARTICLE" | "GITHUB" | "YOUTUBE" | "WEBSITE" | "TUTORIAL" | "CALL_RECORDING";
       required: boolean;
     }> &
       StoredFileInput,

@@ -1,7 +1,9 @@
 import type { Request, Response } from "express";
+import { env } from "../config/env";
 import { enrollmentService } from "../services/enrollment.service";
 import { sendSuccess } from "../utils/api-response";
 import { routeParam } from "../utils/route-param";
+import { civilNoonInZone } from "../utils/timezone";
 
 function parseIntQuery(value: unknown, fallback: number, min: number, max: number): number {
   if (typeof value !== "string" || value.length === 0) {
@@ -54,6 +56,7 @@ export const enrollmentController = {
         routeParam(req, "programId"),
         req.body.traineeIds,
         req.body.batchId,
+        req.body.joinedAt ? civilNoonInZone(req.body.joinedAt, env.timezone) ?? undefined : undefined,
       ),
     );
   },

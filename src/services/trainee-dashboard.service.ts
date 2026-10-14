@@ -110,7 +110,9 @@ export const traineeDashboardService = {
         },
         overallProgress: { percent: overallProgress },
         pendingAssignments: { total: pendingAssignments.length },
-        upcomingAssessments: { total: upcoming.filter((item) => item.type === "EXAM").length },
+        upcomingAssessments: {
+          total: upcoming.filter((item) => item.type === "EXAM" || item.type === "QUIZ").length,
+        },
       },
       currentLearning: learningResult.data,
       topStudent: leaderboardResult.data,

@@ -14,6 +14,7 @@ import { interventionRepository } from "../repositories/intervention.repository"
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import { isProgramReviewer } from "../utils/roles";
 
 const EXAM_KINDS: QuizKind[] = [QuizKind.WEEKLY_EXAM, QuizKind.MILESTONE_EXAM, QuizKind.FINAL_EXAM];
@@ -138,7 +139,7 @@ export const interventionService = {
       where: { id: enrollmentId },
       include: { program: true },
     });
-    if (!enrollment || enrollment.status === "WITHDRAWN") {
+    if (!enrollment || isExitedEnrollment(enrollment.status)) {
       return;
     }
 

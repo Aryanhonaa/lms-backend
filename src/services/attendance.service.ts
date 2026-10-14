@@ -1,4 +1,5 @@
-import { AttendanceStatus, EnrollmentStatus } from "../generated/prisma";
+import { AttendanceStatus } from "../generated/prisma";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import { prisma } from "../config/prisma";
 import { attendanceRepository } from "../repositories/attendance.repository";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
@@ -61,7 +62,7 @@ export const attendanceService = {
     }
     const sessions = await attendanceRepository.listSessionsForProgram(programId);
     const enrollments = (await enrollmentRepository.findByProgramIds([programId])).filter(
-      (row) => row.status !== EnrollmentStatus.WITHDRAWN,
+      (row) => !isExitedEnrollment(row.status),
     );
 
     const percents = new Map<string, number | null>();

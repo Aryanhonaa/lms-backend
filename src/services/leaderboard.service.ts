@@ -1,4 +1,5 @@
-import { AchievementKey, EnrollmentStatus, QuizKind } from "../generated/prisma";
+import { AchievementKey, QuizKind } from "../generated/prisma";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programBatchRepository } from "../repositories/program-batch.repository";
 import { programRepository } from "../repositories/program.repository";
@@ -209,7 +210,7 @@ export const leaderboardService = {
     }
     await enrollmentService.ensureVisibleEnrollments(user.id);
     const enrollments = await enrollmentRepository.findByUser(user.id);
-    let visible = enrollments.filter((row) => row.status !== EnrollmentStatus.WITHDRAWN && row.batch);
+    let visible = enrollments.filter((row) => !isExitedEnrollment(row.status) && row.batch);
 
     if (programId) {
       visible = visible.filter((row) => row.programId === programId);

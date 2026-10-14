@@ -47,7 +47,49 @@ import { createUserSchema, updateUserSchema } from "../validators/user.validator
 import { addProgramTrainerSchema, assignProgramTrainersSchema } from "../validators/program.validators";
 import { revokeCertificateSchema } from "../validators/certificate.validators";
 import { usageHeartbeatSchema } from "../validators/app-usage.validators";
+import { batchSchema } from "../validators/program.validators";
+import {
+  exitEnrollmentSchema,
+  handoverSchema,
+  holidaysSchema,
+  joinedDateSchema,
+  removeEnrollmentSchema,
+  teamSchema,
+  updateTeamSchema,
+  weeklyOffDaysSchema,
+} from "../validators/batch-tracker.validators";
+import {
+  batchTrackerController,
+  teamController,
+  workCalendarController,
+} from "../controllers/batch-tracker.controller";
 import { trainerProgramRouter } from "./program.routes";
+
+function mountBatchTrackerRoutes(router: Router) {
+  router.get("/batch-tracker", asyncHandler(batchTrackerController.overview));
+  router.get("/batch-tracker/:batchId", asyncHandler(batchTrackerController.detail));
+  router.get("/batch-codes/preview", asyncHandler(batchController.previewCode));
+  router.post("/batches/:batchId/handover", validateBody(handoverSchema), asyncHandler(batchTrackerController.handover));
+  router.post(
+    "/enrollments/:enrollmentId/exit",
+    validateBody(exitEnrollmentSchema),
+    asyncHandler(batchTrackerController.exit),
+  );
+  router.post(
+    "/enrollments/:enrollmentId/remove",
+    validateBody(removeEnrollmentSchema),
+    asyncHandler(batchTrackerController.remove),
+  );
+  router.post("/enrollments/:enrollmentId/reinstate", asyncHandler(batchTrackerController.reinstate));
+  router.patch(
+    "/enrollments/:enrollmentId/joined-date",
+    validateBody(joinedDateSchema),
+    asyncHandler(batchTrackerController.setJoinedDate),
+  );
+  router.delete("/enrollments/:enrollmentId/handover", asyncHandler(batchTrackerController.undoHandover));
+  router.get("/teams", asyncHandler(teamController.list));
+  router.get("/work-calendar", asyncHandler(workCalendarController.get));
+}
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("SUPER_ADMIN", "ADMIN"));
@@ -130,6 +172,17 @@ adminRouter.patch(
   asyncHandler(certificateController.revoke),
 );
 adminRouter.get("/analytics/app-usage", asyncHandler(appUsageController.analytics));
+mountBatchTrackerRoutes(adminRouter);
+adminRouter.patch("/batches/:batchId", validateBody(batchSchema.partial()), asyncHandler(batchController.update));
+adminRouter.post("/teams", validateBody(teamSchema), asyncHandler(teamController.create));
+adminRouter.patch("/teams/:teamId", validateBody(updateTeamSchema), asyncHandler(teamController.update));
+adminRouter.put(
+  "/work-calendar/weekly-off-days",
+  validateBody(weeklyOffDaysSchema),
+  asyncHandler(workCalendarController.setWeeklyOffDays),
+);
+adminRouter.post("/holidays", validateBody(holidaysSchema), asyncHandler(workCalendarController.addHolidays));
+adminRouter.delete("/holidays/:holidayId", asyncHandler(workCalendarController.removeHoliday));
 
 const videoUpload = multer({
   storage: multer.memoryStorage(),
@@ -215,6 +268,7 @@ trainerRouter.patch(
   validateBody(updateAttendanceSchema),
   asyncHandler(attendanceController.update),
 );
+mountBatchTrackerRoutes(trainerRouter);
 trainerRouter.use(trainerProgramRouter);
 
 export const traineeRouter = Router();
