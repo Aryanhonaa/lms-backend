@@ -285,12 +285,11 @@ async function loadStatistics(programIds: string[]) {
 }
 
 async function loadBatches(userId: string) {
-  const where = {
-    linkedFromBatchId: null,
-    OR: [{ createdByUserId: userId }, { trainers: { some: { userId } } }],
-  } as const;
   const rows = await prisma.programBatch.findMany({
-    where,
+    where: {
+      linkedFromBatchId: null,
+      OR: [{ createdByUserId: userId }, { trainers: { some: { userId } } }],
+    },
     include: {
       program: { select: { id: true, title: true } },
       linkedBatches: {

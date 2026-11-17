@@ -1,4 +1,4 @@
-import { EnrollmentStatus } from "../generated/prisma";
+import { CourseOutcome, EnrollmentStatus } from "../generated/prisma";
 import { env } from "../config/env";
 import { prisma } from "../config/prisma";
 import { batchService } from "./batch.service";

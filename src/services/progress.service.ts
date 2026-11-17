@@ -1251,11 +1251,8 @@ export const progressService = {
           ? {
               id: enrollment.batch.id,
               name: enrollment.batch.name,
-              sortOrder: "sortOrder" in enrollment.batch ? enrollment.batch.sortOrder ?? 0 : 0,
-              familyId:
-                "linkedFromBatchId" in enrollment.batch
-                  ? enrollment.batch.linkedFromBatchId ?? enrollment.batch.id
-                  : enrollment.batch.id,
+              sortOrder: enrollment.batch.sortOrder ?? 0,
+              familyId: enrollment.batch.linkedFromBatchId ?? enrollment.batch.id,
             }
           : null,
         currentWeek: view.currentWeek,

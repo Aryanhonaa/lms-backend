@@ -23,6 +23,7 @@ function facts(state: QuizAttemptState): TraineeFacts {
 
 const unused: QuizAttemptState = {
   inProgress: false,
+  pendingReview: false,
   passed: false,
   failed: false,
   bestScore: null,
@@ -32,6 +33,7 @@ const unused: QuizAttemptState = {
 
 const passed: QuizAttemptState = {
   inProgress: false,
+  pendingReview: false,
   passed: true,
   failed: false,
   bestScore: 80,
@@ -39,9 +41,20 @@ const passed: QuizAttemptState = {
   attemptsUsed: 1,
 };
 
+const pending: QuizAttemptState = {
+  inProgress: false,
+  pendingReview: true,
+  passed: false,
+  failed: false,
+  bestScore: null,
+  lastSubmittedAt: new Date(),
+  attemptsUsed: 1,
+};
+
 function failed(attemptsUsed: number): QuizAttemptState {
   return {
     inProgress: false,
+    pendingReview: false,
     passed: false,
     failed: true,
     bestScore: 60,
