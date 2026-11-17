@@ -11,6 +11,7 @@ import { certificateService } from "./certificate.service";
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 
 type SubmitInput = {
   targetKind: FeedbackTargetKind;
@@ -28,7 +29,7 @@ function pickEnrollment(
   enrollments: UserEnrollment[],
   input: { enrollmentId?: string; batchId?: string; programId: string },
 ): UserEnrollment {
-  const matching = enrollments.filter((row) => row.programId === input.programId && row.status !== EnrollmentStatus.WITHDRAWN);
+  const matching = enrollments.filter((row) => row.programId === input.programId && !isExitedEnrollment(row.status));
   if (matching.length === 0) {
     throw ApiError.notFound("Program not found");
   }
@@ -288,12 +289,17 @@ export const feedbackService = {
   },
 
   async moderate(user: AuthUser, id: string, status: FeedbackModerationStatus) {
-    if (user.role !== "SUPER_ADMIN") {
-      throw ApiError.forbidden();
-    }
     const existing = await feedbackRepository.findById(id);
     if (!existing) {
       throw ApiError.notFound("Feedback not found");
+    }
+    if (user.role === "TRAINER") {
+      if (!existing.programId) {
+        throw ApiError.forbidden();
+      }
+      await programService.requireTrainerOnProgram(user, existing.programId);
+    } else if (user.role !== Role.SUPER_ADMIN) {
+      throw ApiError.forbidden();
     }
     const saved = await feedbackRepository.moderate(id, status, user.id);
     return { feedback: toPayload(saved, true) };

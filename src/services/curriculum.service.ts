@@ -49,6 +49,7 @@ type QuizInput = {
   timeLimitMin?: number | null;
   maxAttempts?: number | null;
   randomized?: boolean;
+  shuffleOptions?: boolean;
   questionDrawCount?: number | null;
   revealMode?: "HIDDEN" | "IMMEDIATE" | "SCHEDULED";
   revealAt?: string | Date | null;
@@ -57,6 +58,7 @@ type QuizInput = {
     prompt: string;
     points?: number;
     modelAnswer?: string;
+    keepOptionOrder?: boolean;
     options?: Array<{ label: string; isCorrect: boolean }>;
   }>;
 };
@@ -228,6 +230,7 @@ async function createQuestions(
         prompt: question.prompt,
         points: question.points ?? 1,
         modelAnswer: written ? (question.modelAnswer ?? "").trim() : "",
+        keepOptionOrder: written ? true : question.keepOptionOrder !== false,
       },
     });
 
@@ -756,23 +759,6 @@ export const curriculumService = {
     return this.createQuiz(user, programId, { ...input, kind: QuizKind.FINAL_EXAM, programId });
   },
 
-  async addMilestoneExam(user: AuthUser, milestoneId: string, input: QuizInput) {
-    const milestone = await curriculumRepository.milestone(milestoneId);
-    if (!milestone) {
-      throw ApiError.notFound("Milestone not found");
-    }
-    await programService.requireEditable(user, milestone.programId);
-    const existing = await prisma.quiz.findFirst({ where: { milestoneId } });
-    if (existing) {
-      throw ApiError.conflict("This milestone already has an exam");
-    }
-    return this.createQuiz(user, milestone.programId, {
-      ...input,
-      kind: QuizKind.MILESTONE_EXAM,
-      milestoneId,
-    });
-  },
-
   async createQuiz(
     user: AuthUser,
     programId: string,
@@ -780,7 +766,6 @@ export const curriculumService = {
       kind: QuizKind;
       dayId?: string;
       weekId?: string;
-      milestoneId?: string;
       programId?: string;
     },
   ) {
@@ -799,11 +784,11 @@ export const curriculumService = {
             timeLimitMin: input.timeLimitMin,
             maxAttempts: input.maxAttempts,
             randomized: input.randomized ?? false,
+            shuffleOptions: input.shuffleOptions ?? false,
             questionDrawCount: input.questionDrawCount ?? null,
             ...quizRevealData(input),
             dayId: input.dayId,
             weekId: input.weekId,
-            milestoneId: input.milestoneId,
             programId: input.kind === QuizKind.FINAL_EXAM ? programId : input.programId,
           },
         });
@@ -824,7 +809,6 @@ export const curriculumService = {
     }
     const programId =
       quiz.programId ??
-      quiz.milestone?.programId ??
       quiz.week?.programId ??
       quiz.day?.week.programId;
     if (!programId) {
@@ -850,6 +834,7 @@ export const curriculumService = {
             timeLimitMin: input.timeLimitMin,
             maxAttempts: input.maxAttempts,
             randomized: input.randomized,
+            shuffleOptions: input.shuffleOptions,
             questionDrawCount: input.questionDrawCount,
             ...quizRevealData(input, { revealMode: quiz.revealMode, revealAt: quiz.revealAt }),
           },
@@ -871,7 +856,6 @@ export const curriculumService = {
     }
     const programId =
       quiz.programId ??
-      quiz.milestone?.programId ??
       quiz.week?.programId ??
       quiz.day?.week.programId;
     if (!programId) {
@@ -880,73 +864,6 @@ export const curriculumService = {
     await programService.requireEditable(user, programId);
     await prisma.quiz.delete({ where: { id: quizId } });
     return programService.getTreeForUser(user, programId);
-  },
-
-  async addMilestone(user: AuthUser, programId: string, input: { title: string; afterWeekIndex: number }) {
-    await programService.requireEditable(user, programId);
-    const sortOrder = await curriculumRepository.nextMilestoneOrder(programId);
-    await prisma.milestone.create({
-      data: {
-        programId,
-        sortOrder,
-        title: input.title,
-        afterWeekIndex: input.afterWeekIndex,
-      },
-    });
-    return programService.getTreeForUser(user, programId);
-  },
-
-  async updateMilestone(user: AuthUser, id: string, input: Partial<{ title: string; afterWeekIndex: number }>) {
-    const milestone = await curriculumRepository.milestone(id);
-    if (!milestone) {
-      throw ApiError.notFound("Milestone not found");
-    }
-    await programService.requireEditable(user, milestone.programId);
-    await prisma.milestone.update({ where: { id }, data: input });
-    return programService.getTreeForUser(user, milestone.programId);
-  },
-
-  async deleteMilestone(user: AuthUser, id: string) {
-    const milestone = await curriculumRepository.milestone(id);
-    if (!milestone) {
-      throw ApiError.notFound("Milestone not found");
-    }
-    await programService.requireEditable(user, milestone.programId);
-    await prisma.milestone.delete({ where: { id } });
-    return programService.getTreeForUser(user, milestone.programId);
-  },
-
-  async addRequirement(
-    user: AuthUser,
-    milestoneId: string,
-    input: { label: string; kind?: "WEEKS_COMPLETED" | "ASSESSMENTS_PASSED" | "ASSIGNMENTS_COMPLETE" | "ATTENDANCE" | "CUSTOM"; targetCount?: number },
-  ) {
-    const milestone = await curriculumRepository.milestone(milestoneId);
-    if (!milestone) {
-      throw ApiError.notFound("Milestone not found");
-    }
-    await programService.requireEditable(user, milestone.programId);
-    const sortOrder = await curriculumRepository.nextRequirementOrder(milestoneId);
-    await prisma.milestoneRequirement.create({
-      data: {
-        milestoneId,
-        sortOrder,
-        label: input.label,
-        kind: input.kind ?? "CUSTOM",
-        targetCount: input.targetCount ?? (input.kind === "ATTENDANCE" ? 80 : 1),
-      },
-    });
-    return programService.getTreeForUser(user, milestone.programId);
-  },
-
-  async deleteRequirement(user: AuthUser, id: string) {
-    const requirement = await curriculumRepository.requirement(id);
-    if (!requirement) {
-      throw ApiError.notFound("Requirement not found");
-    }
-    await programService.requireEditable(user, requirement.milestone.programId);
-    await prisma.milestoneRequirement.delete({ where: { id } });
-    return programService.getTreeForUser(user, requirement.milestone.programId);
   },
 
   async addSession(user: AuthUser, weekId: string, input: SessionInput & { title: string }) {

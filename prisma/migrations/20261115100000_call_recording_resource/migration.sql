@@ -1,0 +1,2 @@
+-- AlterEnum
+ALTER TYPE "ResourceKind" ADD VALUE 'CALL_RECORDING';

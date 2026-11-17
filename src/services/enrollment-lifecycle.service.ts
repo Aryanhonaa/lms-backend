@@ -1,4 +1,4 @@
-import { CertificateStatus, CourseOutcome, EnrollmentStatus } from "../generated/prisma";
+import { EnrollmentStatus } from "../generated/prisma";
 import { env } from "../config/env";
 import { prisma } from "../config/prisma";
 import { batchService } from "./batch.service";
@@ -37,13 +37,6 @@ async function requireEnrollmentAccess(user: AuthUser, enrollmentId: string) {
   }
   await batchService.requireBatchManage(user, enrollment.batchId);
   return enrollment;
-}
-
-function isCertified(row: { courseOutcome: CourseOutcome; certificate: { status: CertificateStatus } | null }) {
-  if (row.certificate) {
-    return row.certificate.status === CertificateStatus.VALID;
-  }
-  return row.courseOutcome === CourseOutcome.PASSED;
 }
 
 export const enrollmentLifecycleService = {
@@ -153,9 +146,18 @@ export const enrollmentLifecycleService = {
       where: { id: { in: input.enrollmentIds }, batchId },
       include: { certificate: { select: { status: true } } },
     });
-    const eligible = rows.filter((row) => !isExitedEnrollment(row.status) && isCertified(row));
+    const { familyFullyPassed } = await import("./batch-family.service");
+    const eligible = [];
+    for (const row of rows) {
+      if (isExitedEnrollment(row.status)) {
+        continue;
+      }
+      if (await familyFullyPassed(row.userId, row.batchId)) {
+        eligible.push(row);
+      }
+    }
     if (eligible.length === 0) {
-      throw ApiError.badRequest("Only certified trainees can be handed over.");
+      throw ApiError.badRequest("Hand over only after the trainee completes every course in this batch.");
     }
     await prisma.enrollment.updateMany({
       where: { id: { in: eligible.map((row) => row.id) } },

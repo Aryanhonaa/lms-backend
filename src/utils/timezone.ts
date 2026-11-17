@@ -116,6 +116,11 @@ export function parseIsoDate(value: string): { year: number; month: number; day:
   return { year, month, day };
 }
 
+export function civilNoonInZone(value: string, timeZone: string): Date | null {
+  const parts = parseIsoDate(value);
+  return parts ? wallClockInZoneToUtc(parts.year, parts.month, parts.day, 12, 0, 0, timeZone) : null;
+}
+
 export function todayInZone(timeZone: string, now = new Date()): { year: number; month: number; day: number } {
   const parts = getZonedParts(now, timeZone);
   return { year: parts.year, month: parts.month, day: parts.day };

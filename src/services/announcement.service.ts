@@ -1,4 +1,4 @@
-import { AnnouncementAudience, EnrollmentStatus, Role } from "../generated/prisma";
+import { AnnouncementAudience, Role } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { announcementRepository } from "../repositories/engagement.repository";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
@@ -6,6 +6,7 @@ import { programBatchRepository } from "../repositories/program-batch.repository
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 import { isProgramReviewer } from "../utils/roles";
 
 type CreateInput = {
@@ -17,6 +18,16 @@ type CreateInput = {
   traineeIds?: string[];
 };
 
+const ACTION_MARKER = /\n\n\[\[action:(\/[^\]\r\n]+)\]\]$/;
+
+function announcementContent(body: string): { body: string; actionHref: string | null } {
+  const match = body.match(ACTION_MARKER);
+  return {
+    body: match ? body.slice(0, match.index) : body,
+    actionHref: match?.[1] ?? null,
+  };
+}
+
 function uniqueIds(values: string[] | undefined): string[] {
   return [...new Set((values ?? []).map((id) => id.trim()).filter(Boolean))];
 }
@@ -26,10 +37,12 @@ function toPayload(
   options?: { includeRecipients?: boolean },
 ) {
   const includeRecipients = options?.includeRecipients !== false;
+  const content = announcementContent(row.body);
   return {
     id: row.id,
     title: row.title,
-    body: row.body,
+    body: content.body,
+    actionHref: content.actionHref,
     audience: row.audience,
     program: row.program,
     batch: row.batch,
@@ -87,7 +100,7 @@ export const announcementService = {
         where: {
           batchId: batch.id,
           userId: { in: traineeIds },
-          status: { not: EnrollmentStatus.WITHDRAWN },
+          status: ACTIVE_STATUS_FILTER,
         },
         select: { userId: true },
       });
@@ -173,7 +186,7 @@ export const announcementService = {
         programTitle: item.program?.title ?? item.batch?.name ?? null,
         createdAt,
         read: isOwn || readSet.has(item.id),
-        href,
+        href: item.actionHref ?? href,
       };
     });
 

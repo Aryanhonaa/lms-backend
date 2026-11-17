@@ -46,6 +46,7 @@ async function createLessonProgram(
   adminCookie: string,
   title: string,
   withQuiz: boolean,
+  enrollEmail: string | null = accounts.trainee.email,
 ) {
   const created = await request(app)
     .post("/api/v1/trainer/programs")
@@ -97,7 +98,9 @@ async function createLessonProgram(
 
   await request(app).post(`/api/v1/programs/${programId}/submit`).set("Cookie", trainerCookie);
   await request(app).post(`/api/v1/programs/${programId}/approve`).set("Cookie", adminCookie);
-  await enrollTraineeByEmail(app, trainerCookie, programId, accounts.trainee.email);
+  if (enrollEmail) {
+    await enrollTraineeByEmail(app, trainerCookie, programId, enrollEmail);
+  }
   return { programId, lessonId, quizId };
 }
 
@@ -275,5 +278,113 @@ describe("certificates and public verification", () => {
       .set("Cookie", traineeCookie)
       .send({ reason: "nope" });
     expect(traineeRevoke.status).toBe(403);
+  });
+});
+
+describe("consolidated certificates for linked courses", () => {
+  const familyAccounts = {
+    admin: { name: "P10C Admin", email: `phase10c.admin.${suffix}@lms.local`, role: Role.SUPER_ADMIN },
+    trainer: { name: "P10C Trainer", email: `phase10c.trainer.${suffix}@lms.local`, role: Role.TRAINER },
+    trainee: { name: "P10C Trainee", email: `phase10c.trainee.${suffix}@lms.local`, role: Role.TRAINEE },
+  };
+  const family = {
+    firstProgramId: "",
+    firstLessonId: "",
+    secondProgramId: "",
+    secondLessonId: "",
+  };
+
+  beforeAll(async () => {
+    const passwordHash = await hashPassword(password);
+    await prisma.user.createMany({
+      data: Object.values(familyAccounts).map((account) => ({ ...account, passwordHash })),
+    });
+    const trainerCookie = await login(familyAccounts.trainer.email);
+    const adminCookie = await login(familyAccounts.admin.email);
+    const first = await createLessonProgram(trainerCookie, adminCookie, "Linked Cert Alpha", false, null);
+    const second = await createLessonProgram(trainerCookie, adminCookie, "Linked Cert Beta", false, null);
+    family.firstProgramId = first.programId;
+    family.firstLessonId = first.lessonId;
+    family.secondProgramId = second.programId;
+    family.secondLessonId = second.lessonId;
+
+    const batch = await request(app)
+      .post(`/api/v1/trainer/programs/${first.programId}/batches`)
+      .set("Cookie", trainerCookie)
+      .send({ name: `Linked cert ${suffix}`, capacity: 25, programIds: [second.programId] });
+    expect(batch.status).toBe(201);
+    const trainee = await prisma.user.findUniqueOrThrow({ where: { email: familyAccounts.trainee.email } });
+    const enrolled = await request(app)
+      .post(`/api/v1/trainer/batches/${batch.body.data.batch.id}/enrollments`)
+      .set("Cookie", trainerCookie)
+      .send({ traineeIds: [trainee.id] });
+    expect(enrolled.status).toBe(200);
+  });
+
+  afterAll(async () => {
+    const emails = Object.values(familyAccounts).map((account) => account.email);
+    await prisma.enrollment.deleteMany({ where: { user: { email: { in: emails } } } });
+    await prisma.program.deleteMany({ where: { createdBy: { email: { in: emails } } } });
+    await prisma.session.deleteMany({ where: { user: { email: { in: emails } } } });
+    await prisma.user.deleteMany({ where: { email: { in: emails } } });
+  });
+
+  async function completeCourse(traineeCookie: string, programId: string, lessonId: string) {
+    await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
+    const complete = await request(app)
+      .post(`/api/v1/trainee/items/LESSON/${lessonId}/complete`)
+      .set("Cookie", traineeCookie);
+    expect(complete.status).toBe(200);
+    const review = await request(app).post("/api/v1/trainee/feedback").set("Cookie", traineeCookie).send({
+      targetKind: "COURSE",
+      targetId: programId,
+      rating: 5,
+      comment: "Required course review.",
+    });
+    expect(review.status).toBe(201);
+  }
+
+  it("issues one certificate only after every linked course is complete", async () => {
+    const traineeCookie = await login(familyAccounts.trainee.email);
+
+    await completeCourse(traineeCookie, family.firstProgramId, family.firstLessonId);
+
+    const afterFirst = await request(app)
+      .get(`/api/v1/trainee/programs/${family.firstProgramId}/certificate`)
+      .set("Cookie", traineeCookie);
+    expect(afterFirst.status).toBe(200);
+    expect(afterFirst.body.data.eligible).toBe(false);
+    expect(afterFirst.body.data.certificate).toBeNull();
+    expect(
+      afterFirst.body.data.requirements.every((row: { met: boolean }) => row.met),
+    ).toBe(true);
+
+    const listedAfterFirst = await request(app).get("/api/v1/trainee/certificates").set("Cookie", traineeCookie);
+    expect(listedAfterFirst.body.data.certificates).toHaveLength(0);
+
+    await completeCourse(traineeCookie, family.secondProgramId, family.secondLessonId);
+
+    const afterSecond = await request(app)
+      .get(`/api/v1/trainee/programs/${family.secondProgramId}/certificate`)
+      .set("Cookie", traineeCookie);
+    expect(afterSecond.status).toBe(200);
+    expect(afterSecond.body.data.eligible).toBe(true);
+    expect(afterSecond.body.data.certificate.certificateId).toMatch(/^LMS-[A-F0-9]{12}$/);
+    expect(afterSecond.body.data.certificate.program.title).toBe("Linked Cert Alpha and Linked Cert Beta");
+    expect(afterSecond.body.data.certificate.courseTitles).toEqual(["Linked Cert Alpha", "Linked Cert Beta"]);
+    const certificateId = afterSecond.body.data.certificate.certificateId as string;
+
+    const primaryStatus = await request(app)
+      .get(`/api/v1/trainee/programs/${family.firstProgramId}/certificate`)
+      .set("Cookie", traineeCookie);
+    expect(primaryStatus.body.data.certificate.certificateId).toBe(certificateId);
+
+    const listed = await request(app).get("/api/v1/trainee/certificates").set("Cookie", traineeCookie);
+    expect(listed.body.data.certificates).toHaveLength(1);
+    expect(listed.body.data.certificates[0].certificateId).toBe(certificateId);
+
+    const verified = await request(app).get(`/api/v1/verify/${certificateId}`);
+    expect(verified.status).toBe(200);
+    expect(verified.body.data.certificate.program).toBe("Linked Cert Alpha and Linked Cert Beta");
   });
 });

@@ -368,7 +368,7 @@ describe("assessments and assignments", () => {
     expect(graded.body.data.submission.score).toBe(90);
   });
 
-  it("draws a subset of the question bank and shuffles options per attempt", async () => {
+  it("draws a subset of the question bank and preserves option order per attempt", async () => {
     const trainerCookie = await login(accounts.trainer.email);
     const adminCookie = await login(accounts.admin.email);
     const traineeCookie = await login(accounts.trainee.email);
@@ -454,5 +454,189 @@ describe("assessments and assignments", () => {
     const drawnIds = attempt.questions.map((row: { id: string }) => row.id);
     expect(new Set(drawnIds).size).toBe(2);
     expect(JSON.stringify(started.body)).not.toContain("isCorrect");
+
+    const bankById = new Map(
+      (quiz.questions as Array<{ id: string; options: Array<{ id: string; label: string; sortOrder?: number }> }>).map(
+        (question) => [question.id, question],
+      ),
+    );
+    for (const question of attempt.questions as Array<{
+      id: string;
+      options: Array<{ id: string; label: string }>;
+    }>) {
+      const source = bankById.get(question.id);
+      expect(source).toBeTruthy();
+      const expectedLabels = [...source!.options]
+        .sort((left, right) => (left.sortOrder ?? 0) - (right.sortOrder ?? 0))
+        .map((option) => option.label);
+      expect(question.options.map((option) => option.label)).toEqual(expectedLabels);
+    }
+  });
+
+  it("shuffles question order without moving All of the above or breaking the correct option", async () => {
+    const trainerCookie = await login(accounts.trainer.email);
+    const adminCookie = await login(accounts.admin.email);
+    const traineeCookie = await login(accounts.trainee.email);
+
+    const created = await request(app)
+      .post("/api/v1/trainer/programs")
+      .set("Cookie", trainerCookie)
+      .send({
+        title: `Option order ${suffix}`,
+        description: "Keep choice order",
+        category: "Web",
+        difficulty: "BEGINNER",
+        durationWeeks: 1,
+        trainingMode: "PROGRESSION",
+      });
+    expect(created.status).toBe(201);
+    const programId = created.body.data.program.id as string;
+    const weekRes = await request(app)
+      .post(`/api/v1/trainer/programs/${programId}/weeks`)
+      .set("Cookie", trainerCookie)
+      .send({ title: "Week 1" });
+    const weekId = weekRes.body.data.program.weeks[0].id as string;
+    const dayRes = await request(app)
+      .post(`/api/v1/trainer/weeks/${weekId}/days`)
+      .set("Cookie", trainerCookie)
+      .send({ title: "Day 1" });
+    const dayId = dayRes.body.data.program.weeks[0].days[0].id as string;
+    const lessonRes = await request(app)
+      .post(`/api/v1/trainer/days/${dayId}/lessons`)
+      .set("Cookie", trainerCookie)
+      .send({ title: "Prep", required: true });
+    expect(lessonRes.status).toBe(200);
+    const lessonId = lessonRes.body.data.program.weeks[0].days[0].lessons[0].id as string;
+
+    const optionOrder = [
+      { label: "TCP", isCorrect: false },
+      { label: "UDP", isCorrect: false },
+      { label: "ICMP", isCorrect: false },
+      { label: "All of the above", isCorrect: true },
+    ];
+    const quizRes = await request(app)
+      .post(`/api/v1/trainer/days/${dayId}/practice-quiz`)
+      .set("Cookie", trainerCookie)
+      .send({
+        title: "Shuffled questions",
+        passingScore: 70,
+        randomized: true,
+        questions: [
+          { prompt: "Which are network protocols?", options: optionOrder },
+          {
+            prompt: "Second question?",
+            options: [
+              { label: "One", isCorrect: true },
+              { label: "Two", isCorrect: false },
+              { label: "Three", isCorrect: false },
+              { label: "Four", isCorrect: false },
+            ],
+          },
+          {
+            prompt: "Third question?",
+            options: [
+              { label: "Red", isCorrect: false },
+              { label: "Blue", isCorrect: true },
+              { label: "Green", isCorrect: false },
+              { label: "Yellow", isCorrect: false },
+            ],
+          },
+        ],
+      });
+    expect(quizRes.status).toBe(200);
+    const quiz = quizRes.body.data.program.weeks[0].days[0].quizzes[0];
+    expect((await request(app).post(`/api/v1/programs/${programId}/submit`).set("Cookie", trainerCookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/programs/${programId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+    await enrollTraineeByEmail(app, trainerCookie, programId, accounts.trainee.email);
+
+    await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
+    expect(
+      (await request(app).post(`/api/v1/trainee/items/LESSON/${lessonId}/complete`).set("Cookie", traineeCookie)).status,
+    ).toBe(200);
+
+    const started = await request(app)
+      .post(`/api/v1/trainee/assessments/${quiz.id}/attempts`)
+      .set("Cookie", traineeCookie);
+    expect(started.status).toBe(201);
+    const attempt = started.body.data.attempt;
+    expect(attempt.questions).toHaveLength(3);
+
+    const first = (quiz.questions as Array<{ prompt: string; options: Array<{ id: string; label: string; isCorrect: boolean }> }>).find(
+      (question) => question.prompt === "Which are network protocols?",
+    );
+    expect(first).toBeTruthy();
+    const seen = attempt.questions.find((question: { id: string }) => question.id === first!.id);
+    expect(seen.options.map((option: { label: string }) => option.label)).toEqual([
+      "TCP",
+      "UDP",
+      "ICMP",
+      "All of the above",
+    ]);
+    expect(seen.options[3].id).toBe(first!.options.find((option) => option.label === "All of the above")!.id);
+
+    const answers = attempt.questions.map((question: { id: string; options: Array<{ id: string; label: string }> }) => {
+      if (question.id === first!.id) {
+        return { questionId: question.id, optionIds: [question.options[3].id] };
+      }
+      const source = (quiz.questions as Array<{ id: string; options: Array<{ id: string; isCorrect: boolean }> }>).find(
+        (row) => row.id === question.id,
+      )!;
+      return { questionId: question.id, optionIds: [source.options.find((option) => option.isCorrect)!.id] };
+    });
+    const submitted = await request(app)
+      .post(`/api/v1/trainee/attempts/${attempt.id}/submit`)
+      .set("Cookie", traineeCookie)
+      .send({ answers });
+    expect(submitted.status).toBe(200);
+    expect(submitted.body.data.attempt.passed).toBe(true);
+  });
+
+  it("collects answers waiting for review in a cross-course grading queue for trainers", async () => {
+    const trainerCookie = await login(accounts.trainer.email);
+    const traineeCookie = await login(accounts.trainee.email);
+    const attempt = await prisma.assessmentAttempt.findFirstOrThrow({
+      where: { quizId: ids.weeklyId, enrollment: { user: { email: accounts.trainee.email } } },
+    });
+    await prisma.assessmentAttempt.update({
+      where: { id: attempt.id },
+      data: { needsReview: true, score: null, passed: null, gradedAt: null },
+    });
+
+    const count = await request(app).get("/api/v1/trainer/grading-queue/count").set("Cookie", trainerCookie);
+    expect(count.status).toBe(200);
+    expect(count.body.data.pending).toBe(1);
+
+    const queue = await request(app).get("/api/v1/trainer/grading-queue").set("Cookie", trainerCookie);
+    expect(queue.status).toBe(200);
+    expect(queue.body.data.view).toBe("pending");
+    expect(queue.body.data.summary.pending).toBe(1);
+    expect(queue.body.data.items).toHaveLength(1);
+    const item = queue.body.data.items[0];
+    expect(item.attemptId).toBe(attempt.id);
+    expect(item.quiz.id).toBe(ids.weeklyId);
+    expect(item.programId).toBe(ids.programId);
+    expect(item.trainee.email).toBe(accounts.trainee.email);
+
+    const scoped = await request(app)
+      .get(`/api/v1/trainer/grading-queue?programId=${ids.programId}`)
+      .set("Cookie", trainerCookie);
+    expect(scoped.status).toBe(200);
+    expect(scoped.body.data.items).toHaveLength(1);
+
+    const batchId = item.batch?.id as string;
+    expect(batchId).toBeTruthy();
+    const byBatch = await request(app)
+      .get(`/api/v1/trainer/grading-queue?batchId=${batchId}`)
+      .set("Cookie", trainerCookie);
+    expect(byBatch.status).toBe(200);
+    expect(byBatch.body.data.items).toHaveLength(1);
+    expect(byBatch.body.data.summary.pending).toBe(1);
+
+    const graded = await request(app).get("/api/v1/trainer/grading-queue?view=graded").set("Cookie", trainerCookie);
+    expect(graded.status).toBe(200);
+    expect(graded.body.data.items.map((row: { attemptId: string }) => row.attemptId)).not.toContain(attempt.id);
+
+    const traineeDenied = await request(app).get("/api/v1/trainer/grading-queue").set("Cookie", traineeCookie);
+    expect(traineeDenied.status).toBe(403);
   });
 });

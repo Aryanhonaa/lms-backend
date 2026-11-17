@@ -15,6 +15,10 @@ function queryInt(value: unknown): number | undefined {
 }
 
 export const batchController = {
+  async catalog(req: Request, res: Response) {
+    sendSuccess(res, await batchService.catalog(req.user!));
+  },
+
   async list(req: Request, res: Response) {
     sendSuccess(res, await batchService.listForProgram(req.user!, routeParam(req, "programId")));
   },

@@ -1,5 +1,5 @@
 -- AlterEnum
-ALTER TYPE "EnrollmentStatus" ADD VALUE 'TERMINATED';
+ALTER TYPE "EnrollmentStatus" ADD VALUE IF NOT EXISTS 'TERMINATED';
 
 -- CreateEnum
 CREATE TYPE "LineOfBusiness" AS ENUM ('VOICE', 'NON_VOICE');

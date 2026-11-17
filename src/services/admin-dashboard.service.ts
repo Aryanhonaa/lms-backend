@@ -1,6 +1,7 @@
 import { EnrollmentStatus, InterventionStatus, ProgramStatus, ResourceKind, Role } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { REVIEW_VISIBLE_PROGRAM_STATUSES } from "../repositories/program.repository";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 
 export type MaterialType = "PROGRAM" | "VIDEO" | "DOCUMENT" | "LINK";
 
@@ -185,7 +186,7 @@ export const adminDashboardService = {
         take: 8,
       }),
       prisma.enrollment.findMany({
-        where: { status: { not: EnrollmentStatus.WITHDRAWN } },
+        where: { status: ACTIVE_STATUS_FILTER },
         include: {
           user: { select: { name: true } },
           program: { select: { title: true } },

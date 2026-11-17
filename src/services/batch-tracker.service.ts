@@ -28,6 +28,8 @@ import { programService } from "./program.service";
 import { workCalendarService } from "./work-calendar.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { orderedBatchCourses } from "../utils/course-sequence";
+import { familyCourseOutcome } from "./batch-family.service";
 import { isExitedEnrollment } from "../utils/enrollment-status";
 import { isProgramReviewer } from "../utils/roles";
 import { zonedYmd } from "../utils/timezone";
@@ -47,34 +49,51 @@ export type TrackerFilters = {
 
 const FINISHED_ATTEMPTS = [AssessmentAttemptStatus.SUBMITTED, AssessmentAttemptStatus.TIMED_OUT];
 
+const enrollmentSelect = {
+  id: true,
+  userId: true,
+  _count: enrollmentActivityCount,
+  status: true,
+  joinedAt: true,
+  exitedAt: true,
+  exitReason: true,
+  courseOutcome: true,
+  overallProgress: true,
+  progressSnapshot: true,
+  handedOverAt: true,
+  user: { select: { id: true, name: true, email: true } },
+  team: { select: { id: true, name: true } },
+  exitedBy: { select: { id: true, name: true } },
+  certificate: { select: { status: true, issuedAt: true, certificateId: true } },
+  assessmentAttempts: {
+    where: { status: { in: FINISHED_ATTEMPTS }, quiz: { kind: QuizKind.FINAL_EXAM } },
+    orderBy: { submittedAt: "desc" as const },
+    take: 1,
+    select: { score: true, passed: true, submittedAt: true },
+  },
+} as const;
+
 const batchInclude = {
   program: { select: { id: true, title: true, trainingMode: true, updatedAt: true } },
+  linkedBatches: {
+    select: {
+      id: true,
+      programId: true,
+      sortOrder: true,
+      createdAt: true,
+      program: { select: { id: true, title: true } },
+      enrollments: {
+        where: { status: { not: EnrollmentStatus.REMOVED } },
+        select: enrollmentSelect,
+      },
+    },
+    orderBy: [{ sortOrder: "asc" as const }, { createdAt: "asc" as const }],
+  },
   trainers: { include: { user: { select: { id: true, name: true, email: true } } } },
   enrollments: {
     where: { status: { not: EnrollmentStatus.REMOVED } },
     orderBy: { joinedAt: "asc" as const },
-    select: {
-      id: true,
-      _count: enrollmentActivityCount,
-      status: true,
-      joinedAt: true,
-      exitedAt: true,
-      exitReason: true,
-      courseOutcome: true,
-      overallProgress: true,
-      progressSnapshot: true,
-      handedOverAt: true,
-      user: { select: { id: true, name: true, email: true } },
-      team: { select: { id: true, name: true } },
-      exitedBy: { select: { id: true, name: true } },
-      certificate: { select: { status: true, issuedAt: true, certificateId: true } },
-      assessmentAttempts: {
-        where: { status: { in: FINISHED_ATTEMPTS }, quiz: { kind: QuizKind.FINAL_EXAM } },
-        orderBy: { submittedAt: "desc" as const },
-        take: 1,
-        select: { score: true, passed: true, needsReview: true, submittedAt: true },
-      },
-    },
+    select: enrollmentSelect,
   },
 } satisfies Prisma.ProgramBatchInclude;
 
@@ -122,13 +141,20 @@ export function parseTrackerFilters(query: Record<string, unknown>): TrackerFilt
 
 async function scopeWhere(user: AuthUser): Promise<Prisma.ProgramBatchWhereInput> {
   if (isProgramReviewer(user.role)) {
-    return { program: { status: { not: ProgramStatus.DRAFT } } };
+    return { linkedFromBatchId: null, program: { status: { not: ProgramStatus.DRAFT } } };
   }
   if (user.role !== Role.TRAINER) {
     throw ApiError.forbidden();
   }
   const programIds = await programService.listProgramIdsForTrainer(user.id);
-  return { OR: [{ programId: { in: programIds } }, { trainers: { some: { userId: user.id } } }] };
+  return {
+    linkedFromBatchId: null,
+    OR: [
+      { programId: { in: programIds } },
+      { trainers: { some: { userId: user.id } } },
+      { createdByUserId: user.id },
+    ],
+  };
 }
 
 function filterWhere(filters: TrackerFilters): Prisma.ProgramBatchWhereInput[] {
@@ -190,7 +216,21 @@ async function refreshStaleProgress(batches: TrackerBatchRow[]): Promise<boolean
 
 function trainerRef(batch: TrackerBatchRow, role: BatchTrainerRole) {
   const user = batch.trainers.find((row) => row.role === role)?.user;
-  return user ? { id: user.id, name: user.name } : null;
+  return user ? { id: user.id, name: user.name, email: user.email } : null;
+}
+
+function linkedEnrollmentFor(batch: TrackerBatchRow, userId: string) {
+  return batch.linkedBatches.map((linked) => linked.enrollments.find((item) => item.userId === userId));
+}
+
+function familyCertificate(
+  primary: TrackerEnrollmentRow,
+  linked: Array<TrackerEnrollmentRow | undefined>,
+) {
+  const certs = [primary, ...linked.filter((row): row is TrackerEnrollmentRow => Boolean(row))]
+    .map((row) => row.certificate)
+    .filter((row): row is NonNullable<typeof row> => Boolean(row));
+  return certs.find((row) => row.status === "VALID") ?? certs[0] ?? null;
 }
 
 function buildBatch(batch: TrackerBatchRow, calendar: WorkCalendar, todayYmd: string) {
@@ -199,22 +239,25 @@ function buildBatch(batch: TrackerBatchRow, calendar: WorkCalendar, todayYmd: st
   const day = trainingDay(funnelBatch, todayYmd, calendar);
   const trainees = batch.enrollments.map((row) => {
     const exam = row.assessmentAttempts[0] ?? null;
+    const linked = linkedEnrollmentFor(batch, row.userId);
+    const familyOutcome = familyCourseOutcome(row, linked);
+    const familyCert = familyOutcome === "PASSED" ? familyCertificate(row, linked) : null;
     const classified = classifyTrainee(
       {
         status: row.status,
         joinedYmd: ymd(row.joinedAt) ?? todayYmd,
         exitedYmd: ymd(row.exitedAt),
-        courseOutcome: row.courseOutcome,
+        courseOutcome: familyOutcome,
         progress: Number(row.overallProgress),
         finalExamAttempted: Boolean(exam),
-        certificateStatus: row.certificate?.status ?? null,
+        certificateStatus: familyCert?.status ?? null,
         handedOver: Boolean(row.handedOverAt),
       },
       funnelBatch,
       calendar,
       todayYmd,
     );
-    return { row, exam, classified };
+    return { row, exam, classified, linked, familyCert };
   });
   const funnel = summarizeFunnel(
     trainees.map((item) => item.classified),
@@ -228,12 +271,19 @@ function buildBatch(batch: TrackerBatchRow, calendar: WorkCalendar, todayYmd: st
       code: batch.code,
       name: batch.name,
       program: { id: batch.program.id, title: batch.program.title },
+      courses: orderedBatchCourses(batch),
       lineOfBusiness: batch.lineOfBusiness,
       month: batch.month,
       year: batch.year,
       batchNumber: batch.batchNumber,
       salesTrainer: trainerRef(batch, BatchTrainerRole.SALES),
-      supportTrainer: trainerRef(batch, BatchTrainerRole.SALES_SUPPORT),
+      supportTrainer:
+        trainerRef(batch, BatchTrainerRole.SALES_SUPPORT) ??
+        trainerRef(batch, BatchTrainerRole.COLLABORATOR),
+      collaborators: batch.trainers
+        .filter((row) => row.role !== BatchTrainerRole.SALES)
+        .map((row) => ({ id: row.user.id, name: row.user.name, email: row.user.email }))
+        .filter((user, index, list) => list.findIndex((row) => row.id === user.id) === index),
       startDate: startYmd,
       targetCompletionDate: milestoneDate(TRAINING_WORKING_DAYS),
       actualCompletionDate: funnelBatch.actualCompletionYmd,
@@ -323,44 +373,90 @@ export const batchTrackerService = {
     return {
       today: todayYmd,
       canManage: batchService.canManageBatch(user, access),
+      canEditTeam: batchService.canEditBatchTeam(user, access),
       batch: { ...built.summary, capacity: batch.capacity },
-      trainees: built.trainees.map(({ row, exam, classified }) => ({
-        enrollmentId: row.id,
-        trainee: row.user,
-        status: row.status,
-        stage: classified.stage,
-        attrition: classified.attrition,
-        joinedAt: ymd(row.joinedAt),
-        joinDay: classified.joinDay,
-        joinedLate: classified.joinedLate,
-        progress: Number(row.overallProgress),
-        courseOutcome: row.courseOutcome,
-        exam: exam
-          ? {
-              score: exam.score === null ? null : Number(exam.score),
-              passed: exam.passed,
-              needsReview: exam.needsReview,
-              submittedAt: exam.submittedAt?.toISOString() ?? null,
-            }
-          : null,
-        appeared: classified.appeared,
-        certified: classified.certified,
-        certificate: row.certificate
-          ? {
-              status: row.certificate.status,
-              issuedAt: row.certificate.issuedAt.toISOString(),
-              certificateId: row.certificate.certificateId,
-            }
-          : null,
-        handedOverAt: ymd(row.handedOverAt),
-        team: row.team,
-        exitedAt: ymd(row.exitedAt),
-        exitDay: classified.exitDay,
-        exitReason: row.exitReason,
-        exitedBy: row.exitedBy,
-        canRemove:
-          !isExitedEnrollment(row.status) && enrollmentActivity(row._count, Boolean(row.certificate)).length === 0,
-      })),
+      trainees: built.trainees.map(({ row, exam, classified, linked, familyCert }) => {
+        const familyCertified = classified.certified;
+        const primaryCourse = {
+          programId: batch.program.id,
+          title: batch.program.title,
+          enrollmentId: row.id,
+          progress: Number(row.overallProgress),
+          courseOutcome: row.courseOutcome,
+          exam: exam
+            ? {
+                score: exam.score === null ? null : Number(exam.score),
+                passed: exam.passed,
+                needsReview: false,
+                submittedAt: exam.submittedAt?.toISOString() ?? null,
+              }
+            : null,
+          certified: familyCertified,
+        };
+        const linkedCourses = batch.linkedBatches.map((linkedBatch, index) => {
+          const linkedEnrollment = linked[index];
+          const linkedExam = linkedEnrollment?.assessmentAttempts[0] ?? null;
+          return {
+            programId: linkedBatch.program.id,
+            title: linkedBatch.program.title,
+            enrollmentId: linkedEnrollment?.id ?? null,
+            progress: linkedEnrollment ? Number(linkedEnrollment.overallProgress) : 0,
+            courseOutcome: linkedEnrollment?.courseOutcome ?? "PENDING",
+            exam: linkedExam
+              ? {
+                  score: linkedExam.score === null ? null : Number(linkedExam.score),
+                  passed: linkedExam.passed,
+                  needsReview: false,
+                  submittedAt: linkedExam.submittedAt?.toISOString() ?? null,
+                }
+              : null,
+            certified: familyCertified,
+          };
+        });
+        const byProgram = new Map(
+          [primaryCourse, ...linkedCourses].map((course) => [course.programId, course]),
+        );
+        const courses = orderedBatchCourses(batch)
+          .map((course) => byProgram.get(course.id))
+          .filter((course): course is NonNullable<typeof course> => Boolean(course));
+        const averageProgress =
+          courses.length > 0
+            ? courses.reduce((sum, course) => sum + course.progress, 0) / courses.length
+            : Number(row.overallProgress);
+
+        return {
+          enrollmentId: row.id,
+          trainee: row.user,
+          status: row.status,
+          stage: classified.stage,
+          attrition: classified.attrition,
+          joinedAt: ymd(row.joinedAt),
+          joinDay: classified.joinDay,
+          joinedLate: classified.joinedLate,
+          progress: Number(row.overallProgress),
+          averageProgress,
+          courses,
+          courseOutcome: row.courseOutcome,
+          exam: primaryCourse.exam,
+          appeared: classified.appeared,
+          certified: classified.certified,
+          certificate: familyCert
+            ? {
+                status: familyCert.status,
+                issuedAt: familyCert.issuedAt.toISOString(),
+                certificateId: familyCert.certificateId,
+              }
+            : null,
+          handedOverAt: ymd(row.handedOverAt),
+          team: row.team,
+          exitedAt: ymd(row.exitedAt),
+          exitDay: classified.exitDay,
+          exitReason: row.exitReason,
+          exitedBy: row.exitedBy,
+          canRemove:
+            !isExitedEnrollment(row.status) && enrollmentActivity(row._count, Boolean(familyCert)).length === 0,
+        };
+      }),
     };
   },
 };

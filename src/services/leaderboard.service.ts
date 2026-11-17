@@ -1,4 +1,4 @@
-import { AchievementKey, EnrollmentStatus, QuizKind } from "../generated/prisma";
+import { AchievementKey, QuizKind } from "../generated/prisma";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programBatchRepository } from "../repositories/program-batch.repository";
 import { programRepository } from "../repositories/program.repository";
@@ -8,11 +8,12 @@ import { progressService } from "./progress.service";
 import { quizState, type ProgramTree, type TraineeFacts } from "./unlock.service";
 import { achievementRepository } from "../repositories/engagement.repository";
 import type { AuthUser } from "../types";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import { blendLeaderboardScore, roundScore } from "../utils/leaderboard-score";
 import { ApiError } from "../utils/api-error";
 
 const QUIZ_KINDS: QuizKind[] = [QuizKind.PRACTICE_QUIZ, QuizKind.WEEKLY_QUIZ];
-const EXAM_KINDS: QuizKind[] = [QuizKind.WEEKLY_EXAM, QuizKind.MILESTONE_EXAM, QuizKind.FINAL_EXAM];
+const EXAM_KINDS: QuizKind[] = [QuizKind.WEEKLY_EXAM, QuizKind.FINAL_EXAM];
 
 export type PublicLeaderboardEntry = {
   rank: number;
@@ -23,8 +24,6 @@ export type PublicLeaderboardEntry = {
   quizzesTotal: number;
   examsPassed: number;
   examsTotal: number;
-  milestonesComplete: number;
-  milestonesTotal: number;
 };
 
 function collectQuizzes(program: ProgramTree) {
@@ -32,7 +31,6 @@ function collectQuizzes(program: ProgramTree) {
     ...program.quizzes,
     ...program.weeks.flatMap((week) => week.quizzes),
     ...program.weeks.flatMap((week) => week.days.flatMap((day) => day.quizzes)),
-    ...program.milestones.flatMap((milestone) => (milestone.exam ? [milestone.exam] : [])),
   ];
   const seen = new Set<string>();
   return rows.filter((quiz) => {
@@ -66,8 +64,6 @@ function publicEntry(row: {
   quizzesTotal: number;
   examsPassed: number;
   examsTotal: number;
-  milestonesComplete: number;
-  milestonesTotal: number;
 }): PublicLeaderboardEntry {
   return {
     rank: row.rank,
@@ -78,8 +74,6 @@ function publicEntry(row: {
     quizzesTotal: row.quizzesTotal,
     examsPassed: row.examsPassed,
     examsTotal: row.examsTotal,
-    milestonesComplete: row.milestonesComplete,
-    milestonesTotal: row.milestonesTotal,
   };
 }
 
@@ -109,11 +103,7 @@ async function computeBoard(programId: string, batchId: string) {
     const progress = view.progress.percent;
     const quiz = meanBest(quizItems, facts);
     const exam = meanBest(examItems, facts);
-    const milestone =
-      program.milestones.length === 0
-        ? null
-        : roundScore((view.milestones.filter((item) => item.satisfied).length / program.milestones.length) * 100);
-    const blend = blendLeaderboardScore({ progress, quiz, exam, milestone });
+    const blend = blendLeaderboardScore({ progress, quiz, exam });
 
     return {
       enrollmentId: enrollment.id,
@@ -125,14 +115,11 @@ async function computeBoard(programId: string, batchId: string) {
       progressPercent: progress,
       quiz,
       exam,
-      milestone,
       weights: blend.weights,
       quizzesPassed: passedCount(quizItems, facts),
       quizzesTotal: quizItems.length,
       examsPassed: passedCount(examItems, facts),
       examsTotal: examItems.length,
-      milestonesComplete: view.milestones.filter((item) => item.satisfied).length,
-      milestonesTotal: program.milestones.length,
     };
   });
 
@@ -193,7 +180,6 @@ function toPayload(board: Awaited<ReturnType<typeof computeBoard>>, viewerUserId
             progress: mine.progressPercent,
             quiz: mine.quiz,
             exam: mine.exam,
-            milestone: mine.milestone,
             weights: mine.weights,
           },
         }
@@ -209,7 +195,7 @@ export const leaderboardService = {
     }
     await enrollmentService.ensureVisibleEnrollments(user.id);
     const enrollments = await enrollmentRepository.findByUser(user.id);
-    let visible = enrollments.filter((row) => row.status !== EnrollmentStatus.WITHDRAWN && row.batch);
+    let visible = enrollments.filter((row) => !isExitedEnrollment(row.status) && row.batch);
 
     if (programId) {
       visible = visible.filter((row) => row.programId === programId);

@@ -43,6 +43,19 @@ enum EnrollmentStatus {
   ACTIVE
   COMPLETED
   WITHDRAWN
+  TERMINATED
+  REMOVED
+}
+
+enum LineOfBusiness {
+  VOICE
+  NON_VOICE
+}
+
+enum BatchTrainerRole {
+  SALES
+  SALES_SUPPORT
+  COLLABORATOR
 }
 
 enum CourseOutcome {
@@ -64,13 +77,13 @@ enum ResourceKind {
   YOUTUBE
   WEBSITE
   TUTORIAL
+  CALL_RECORDING
 }
 
 enum QuizKind {
   PRACTICE_QUIZ
   WEEKLY_QUIZ
   WEEKLY_EXAM
-  MILESTONE_EXAM
   FINAL_EXAM
 }
 
@@ -99,14 +112,6 @@ enum ContentItemType {
   VIDEO
   RESOURCE
   REEL
-}
-
-enum MilestoneRequirementKind {
-  WEEKS_COMPLETED
-  ASSESSMENTS_PASSED
-  ASSIGNMENTS_COMPLETE
-  ATTENDANCE
-  CUSTOM
 }
 
 enum InterventionTrigger {
@@ -147,7 +152,6 @@ enum AttendanceStatus {
 enum AchievementKey {
   FIRST_COURSE_COMPLETED
   PERFECT_QUIZ
-  MILESTONE_MASTER
   TOP_PERFORMER
   PERFECT_ATTENDANCE
   LEARNING_STREAK
@@ -174,6 +178,11 @@ enum AnnouncementAudience {
   TRAINEES
   PROGRAM
   TRAINEES_SELECTED
+}
+
+enum QuestionType {
+  MULTIPLE_CHOICE
+  WRITTEN
 }
 
 enum QuizRevealMode {
@@ -217,8 +226,14 @@ model User {
   trainerCertificates    Certificate[]             @relation("CertificateTrainer")
   revokedCertificates    Certificate[]             @relation("CertificateRevoker")
   enrollmentsCreated     Enrollment[]              @relation("EnrollmentActor")
+  enrollmentExits        Enrollment[]              @relation("EnrollmentExitActor")
   createdBatches         ProgramBatch[]            @relation("BatchCreator")
+  batchAssignments       BatchTrainer[]
+  calendarActivitiesCreated CalendarActivity[]     @relation("CalendarActivityCreator")
+  calendarActivitiesAssigned CalendarActivity[]    @relation("CalendarActivityTrainee")
   contentAttachments     ContentAttachment[]       @relation("ContentAttachmentUploader")
+  gradedAttempts         AssessmentAttempt[]       @relation("AttemptGrader")
+  quizAnswerReleases     QuizBatchAnswerRelease[]  @relation("QuizAnswerRevealer")
 
   @@index([role])
   @@index([isActive])
@@ -290,12 +305,12 @@ model Program {
   batches            ProgramBatch[]
   appUsageSessions   AppUsageSession[]
   weeks              Week[]
-  milestones         Milestone[]
   quizzes            Quiz[]
   interventionFlags  InterventionFlag[]
   feedback           Feedback[]
   announcements      Announcement[]
   certificates       Certificate[]
+  calendarActivities CalendarActivity[]
 
   @@index([status])
   @@index([trainingMode])
@@ -332,12 +347,20 @@ model Enrollment {
   currentWeekIndex  Int              @default(0)
   currentDayIndex   Int              @default(0)
   progressSnapshot  Json?
+  joinedAt          DateTime         @default(now())
+  exitedAt          DateTime?
+  exitReason        String           @default("")
+  exitedByUserId    String?          @db.Uuid
+  handedOverAt      DateTime?
+  teamId            String?          @db.Uuid
   createdAt         DateTime         @default(now())
   updatedAt         DateTime         @updatedAt
 
   program                Program                 @relation(fields: [programId], references: [id], onDelete: Cascade)
   user                   User                    @relation(fields: [userId], references: [id], onDelete: Restrict)
   enrolledBy             User?                   @relation("EnrollmentActor", fields: [enrolledByUserId], references: [id], onDelete: SetNull)
+  exitedBy               User?                   @relation("EnrollmentExitActor", fields: [exitedByUserId], references: [id], onDelete: SetNull)
+  team                   Team?                   @relation(fields: [teamId], references: [id], onDelete: SetNull)
   batch                  ProgramBatch            @relation(fields: [batchId], references: [id], onDelete: Restrict)
   completions              ContentCompletion[]
   assessmentAttempts       AssessmentAttempt[]
@@ -355,29 +378,111 @@ model Enrollment {
   @@index([status])
   @@index([courseOutcome])
   @@index([enrolledByUserId])
+  @@index([teamId])
 }
 
 model ProgramBatch {
-  id              String    @id @default(uuid()) @db.Uuid
-  programId       String    @db.Uuid
-  name            String
-  description     String    @default("")
-  capacity        Int       @default(25)
-  startDate       DateTime?
-  endDate         DateTime?
-  createdByUserId String    @db.Uuid
-  createdAt       DateTime  @default(now())
-  updatedAt       DateTime  @updatedAt
+  id                   String          @id @default(uuid()) @db.Uuid
+  programId            String          @db.Uuid
+  name                 String
+  description          String          @default("")
+  capacity             Int             @default(25)
+  startDate            DateTime?
+  endDate              DateTime?
+  code                 String?         @unique
+  month                Int?
+  year                 Int?
+  batchNumber          Int?
+  lineOfBusiness       LineOfBusiness?
+  actualCompletionDate DateTime?
+  createdByUserId      String          @db.Uuid
+  linkedFromBatchId    String?         @db.Uuid
+  sortOrder            Int             @default(0)
+  createdAt            DateTime        @default(now())
+  updatedAt            DateTime        @updatedAt
 
   program          Program           @relation(fields: [programId], references: [id], onDelete: Cascade)
   createdBy        User              @relation("BatchCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+  linkedFrom       ProgramBatch?     @relation("BatchCourseLinks", fields: [linkedFromBatchId], references: [id], onDelete: Cascade)
+  linkedBatches    ProgramBatch[]    @relation("BatchCourseLinks")
   enrollments      Enrollment[]
   appUsageSessions AppUsageSession[]
   announcements    Announcement[]
+  trainers         BatchTrainer[]
+  calendarActivities CalendarActivity[]
+  quizAnswerReleases QuizBatchAnswerRelease[]
 
   @@unique([programId, name])
   @@index([programId])
   @@index([createdByUserId])
+  @@index([year, month])
+  @@index([linkedFromBatchId])
+  @@index([linkedFromBatchId, sortOrder])
+}
+
+model BatchTrainer {
+  id        String           @id @default(uuid()) @db.Uuid
+  batchId   String           @db.Uuid
+  userId    String           @db.Uuid
+  role      BatchTrainerRole
+  createdAt DateTime         @default(now())
+
+  batch ProgramBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  user  User         @relation(fields: [userId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, userId])
+  @@index([userId])
+  @@index([batchId, role])
+}
+
+model Team {
+  id             String          @id @default(uuid()) @db.Uuid
+  name           String          @unique
+  lineOfBusiness LineOfBusiness?
+  supervisorName String          @default("")
+  isActive       Boolean         @default(true)
+  createdAt      DateTime        @default(now())
+  updatedAt      DateTime        @updatedAt
+
+  enrollments Enrollment[]
+}
+
+model Holiday {
+  id        String   @id @default(uuid()) @db.Uuid
+  date      DateTime @unique @db.Date
+  name      String
+  createdAt DateTime @default(now())
+}
+
+/// Trainer-scheduled calendar activity for one trainee or an entire batch.
+model CalendarActivity {
+  id              String    @id @default(uuid()) @db.Uuid
+  programId       String    @db.Uuid
+  batchId         String    @db.Uuid
+  traineeUserId   String?   @db.Uuid
+  title           String
+  description     String    @default("")
+  startsAt        DateTime
+  endsAt          DateTime?
+  createdByUserId String    @db.Uuid
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  program   Program      @relation(fields: [programId], references: [id], onDelete: Cascade)
+  batch     ProgramBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  trainee   User?        @relation("CalendarActivityTrainee", fields: [traineeUserId], references: [id], onDelete: Cascade)
+  createdBy User         @relation("CalendarActivityCreator", fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  @@index([programId, startsAt])
+  @@index([batchId, startsAt])
+  @@index([traineeUserId, startsAt])
+  @@index([createdByUserId])
+}
+
+model WorkCalendarSetting {
+  id            Int      @id @default(1)
+  weeklyOffDays Int[]    @default([6])
+  updatedAt     DateTime @updatedAt
 }
 
 model ContentCompletion {
@@ -586,24 +691,25 @@ model Quiz {
   timeLimitMin               Int?
   maxAttempts                Int?
   randomized                 Boolean        @default(false)
+  /// When true, MCQ answer choices are shuffled unless the question keeps order.
+  shuffleOptions             Boolean        @default(false)
   questionDrawCount          Int?
   revealMode                 QuizRevealMode @default(IMMEDIATE)
   revealAt                   DateTime?
   answersRevealedAnnouncedAt DateTime?
   dayId                      String?        @db.Uuid
   weekId                     String?        @db.Uuid
-  milestoneId                String?        @unique @db.Uuid
   programId                  String?        @db.Uuid
   createdAt                  DateTime       @default(now())
   updatedAt                  DateTime       @updatedAt
 
   day       Day?                 @relation(fields: [dayId], references: [id], onDelete: Cascade)
   week      Week?                @relation(fields: [weekId], references: [id], onDelete: Cascade)
-  milestone Milestone?           @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
   program   Program?             @relation(fields: [programId], references: [id], onDelete: Cascade)
   questions          Question[]
   attempts           AssessmentAttempt[]
   interventionFlags  InterventionFlag[]
+  batchAnswerReleases QuizBatchAnswerRelease[]
 
   @@index([dayId])
   @@index([weekId])
@@ -611,14 +717,39 @@ model Quiz {
   @@index([kind])
 }
 
+/// Trainer-controlled answer review for one quiz in one course batch (all-or-none).
+model QuizBatchAnswerRelease {
+  id               String    @id @default(uuid()) @db.Uuid
+  quizId           String    @db.Uuid
+  batchId          String    @db.Uuid
+  answersVisible   Boolean   @default(false)
+  revealedAt       DateTime?
+  revealedByUserId String?   @db.Uuid
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  quiz       Quiz         @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  batch      ProgramBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  revealedBy User?        @relation("QuizAnswerRevealer", fields: [revealedByUserId], references: [id], onDelete: SetNull)
+
+  @@unique([quizId, batchId])
+  @@index([batchId])
+  @@index([quizId])
+}
+
 model Question {
-  id        String   @id @default(uuid()) @db.Uuid
-  quizId    String   @db.Uuid
-  sortOrder Int
-  prompt    String
-  points    Int      @default(1)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+  id          String       @id @default(uuid()) @db.Uuid
+  quizId      String       @db.Uuid
+  sortOrder   Int
+  type        QuestionType @default(MULTIPLE_CHOICE)
+  prompt      String
+  points      Int          @default(1)
+  /// Trainer-only marking guide for written questions. Never sent to trainees.
+  modelAnswer String       @default("")
+  /// Keep authored option order (e.g. “All of the above” stays last) even if the quiz shuffles answers.
+  keepOptionOrder Boolean  @default(true)
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   quiz    Quiz               @relation(fields: [quizId], references: [id], onDelete: Cascade)
   options QuestionOption[]
@@ -641,39 +772,6 @@ model QuestionOption {
 
   @@unique([questionId, sortOrder])
   @@index([questionId])
-}
-
-model Milestone {
-  id             String   @id @default(uuid()) @db.Uuid
-  programId      String   @db.Uuid
-  sortOrder      Int
-  title          String
-  afterWeekIndex Int
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  program      Program                 @relation(fields: [programId], references: [id], onDelete: Cascade)
-  requirements MilestoneRequirement[]
-  exam         Quiz?
-
-  @@unique([programId, sortOrder])
-  @@index([programId])
-}
-
-model MilestoneRequirement {
-  id          String                    @id @default(uuid()) @db.Uuid
-  milestoneId String                    @db.Uuid
-  sortOrder   Int
-  kind        MilestoneRequirementKind  @default(CUSTOM)
-  label       String
-  targetCount Int                       @default(1)
-  createdAt   DateTime                  @default(now())
-  updatedAt   DateTime                  @updatedAt
-
-  milestone Milestone @relation(fields: [milestoneId], references: [id], onDelete: Cascade)
-
-  @@unique([milestoneId, sortOrder])
-  @@index([milestoneId])
 }
 
 model TrainingSession {
@@ -726,18 +824,24 @@ model AssessmentAttempt {
   submittedAt       DateTime?
   score             Decimal?                 @db.Decimal(5, 2)
   passed            Boolean?
+  /// Written answers await trainer grading; score and passed stay null until then.
+  needsReview       Boolean                  @default(false)
+  gradedAt          DateTime?
+  gradedByUserId    String?                  @db.Uuid
   questionSnapshot  Json
   createdAt         DateTime                 @default(now())
   updatedAt         DateTime                 @updatedAt
 
   enrollment Enrollment          @relation(fields: [enrollmentId], references: [id], onDelete: Cascade)
   quiz       Quiz                @relation(fields: [quizId], references: [id], onDelete: Cascade)
+  gradedBy   User?               @relation("AttemptGrader", fields: [gradedByUserId], references: [id], onDelete: SetNull)
   answers    AssessmentAnswer[]
 
   @@unique([enrollmentId, quizId, attemptNumber])
   @@index([enrollmentId])
   @@index([quizId])
   @@index([status])
+  @@index([quizId, needsReview])
 }
 
 model AssessmentAnswer {
@@ -745,8 +849,11 @@ model AssessmentAnswer {
   attemptId          String   @db.Uuid
   questionId         String   @db.Uuid
   selectedOptionIds  String[]
+  textAnswer         String   @default("")
   isCorrect          Boolean  @default(false)
   pointsAwarded      Int      @default(0)
+  needsReview        Boolean  @default(false)
+  trainerComment     String   @default("")
   createdAt          DateTime @default(now())
   updatedAt          DateTime @updatedAt
 
@@ -968,6 +1075,7 @@ model Certificate {
   completionDate   DateTime
   issuedAt         DateTime          @default(now())
   finalScore       Decimal           @db.Decimal(5, 2)
+  courseTitles     String[]          @default([])
   status           CertificateStatus @default(VALID)
   verificationHash String
   documentKey      String?

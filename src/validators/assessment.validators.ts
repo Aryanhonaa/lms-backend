@@ -22,6 +22,11 @@ export const gradeAttemptSchema = z.object({
     .min(1),
 });
 
+export const answerVisibilitySchema = z.object({
+  batchId: z.string().uuid(),
+  answersVisible: z.boolean(),
+});
+
 export const assignmentSubmissionSchema = z.object({
   body: z.string().optional(),
   submit: z.boolean().optional(),

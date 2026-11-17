@@ -267,4 +267,39 @@ describe("course runs (batches) as independent offerings", () => {
     expect(intoOpen.status).toBe(200);
     expect(intoOpen.body.data.enrolledCount).toBe(1);
   });
+
+  it("stores a batch-specific course order and lets trainers rearrange it", async () => {
+    const adminCookie = await login(accounts.admin.email);
+    const trainerCookie = await login(accounts.trainer.email);
+    const firstId = await createSubmittedProgram(trainerCookie, `Priority A ${suffix}`);
+    const secondId = await createSubmittedProgram(trainerCookie, `Priority B ${suffix}`);
+    const thirdId = await createSubmittedProgram(trainerCookie, `Priority C ${suffix}`);
+    expect((await request(app).post(`/api/v1/programs/${firstId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/programs/${secondId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/programs/${thirdId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+
+    const created = await request(app)
+      .post(`/api/v1/trainer/programs/${firstId}/batches`)
+      .set("Cookie", trainerCookie)
+      .send({ name: `Priority run ${suffix}`, programIds: [firstId, secondId, thirdId] });
+    expect(created.status).toBe(201);
+    expect(created.body.data.batch.courses.map((course: { id: string }) => course.id)).toEqual([
+      firstId,
+      secondId,
+      thirdId,
+    ]);
+    expect(created.body.data.batch.courses[0].label).toBe("First");
+    expect(created.body.data.batch.courses[1].label).toBe("Second");
+
+    const reordered = await request(app)
+      .patch(`/api/v1/trainer/batches/${created.body.data.batch.id}`)
+      .set("Cookie", trainerCookie)
+      .send({ programIds: [thirdId, firstId, secondId] });
+    expect(reordered.status).toBe(200);
+    expect(reordered.body.data.batch.courses.map((course: { id: string; label: string }) => [course.id, course.label])).toEqual([
+      [thirdId, "First"],
+      [firstId, "Second"],
+      [secondId, "Third"],
+    ]);
+  });
 });

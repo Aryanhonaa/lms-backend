@@ -23,6 +23,16 @@ export const programBatchRepository = {
       include: {
         program: { select: { id: true, title: true, status: true } },
         trainers: batchTrainersInclude,
+        linkedBatches: {
+          select: {
+            id: true,
+            programId: true,
+            sortOrder: true,
+            createdAt: true,
+            program: { select: { id: true, title: true } },
+          },
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
         _count: { select: { enrollments: { where: { status: ACTIVE_STATUS_FILTER } } } },
       },
     });
@@ -30,9 +40,20 @@ export const programBatchRepository = {
 
   listForProgram(programId: string) {
     return prisma.programBatch.findMany({
-      where: { programId },
+      where: { programId, linkedFromBatchId: null },
       include: {
+        program: { select: { id: true, title: true, status: true } },
         trainers: batchTrainersInclude,
+        linkedBatches: {
+          select: {
+            id: true,
+            programId: true,
+            sortOrder: true,
+            createdAt: true,
+            program: { select: { id: true, title: true } },
+          },
+          orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+        },
         _count: { select: { enrollments: { where: { status: ACTIVE_STATUS_FILTER } } } },
       },
       orderBy: { createdAt: "asc" },
@@ -48,6 +69,8 @@ export const programBatchRepository = {
       startDate: Date | null;
       endDate: Date | null;
       createdByUserId: string;
+      linkedFromBatchId?: string | null;
+      sortOrder?: number;
     } & BatchTrackerFields,
   ) {
     return prisma.programBatch.create({ data, include: { trainers: batchTrainersInclude } });
@@ -61,6 +84,7 @@ export const programBatchRepository = {
       capacity?: number;
       startDate?: Date | null;
       endDate?: Date | null;
+      sortOrder?: number;
     } & BatchTrackerFields,
   ) {
     return prisma.programBatch.update({ where: { id }, data, include: { trainers: batchTrainersInclude } });
@@ -71,11 +95,21 @@ export const programBatchRepository = {
       await prisma.batchTrainer.deleteMany({ where: { batchId, role } });
       return;
     }
-    await prisma.batchTrainer.upsert({
-      where: { batchId_role: { batchId, role } },
-      create: { batchId, role, userId },
-      update: { userId },
-    });
+    const existing = await prisma.batchTrainer.findFirst({ where: { batchId, role } });
+    if (existing) {
+      await prisma.batchTrainer.update({ where: { id: existing.id }, data: { userId } });
+      return;
+    }
+    await prisma.batchTrainer.create({ data: { batchId, role, userId } });
+  },
+
+  async replaceTrainers(batchId: string, trainers: Array<{ userId: string; role: BatchTrainerRole }>) {
+    await prisma.$transaction([
+      prisma.batchTrainer.deleteMany({ where: { batchId } }),
+      ...(trainers.length > 0
+        ? [prisma.batchTrainer.createMany({ data: trainers.map((row) => ({ batchId, userId: row.userId, role: row.role })) })]
+        : []),
+    ]);
   },
 
   async nextBatchNumber(month: number, year: number) {

@@ -1,6 +1,5 @@
 import {
   AssignmentSubmissionStatus,
-  EnrollmentStatus,
   InterventionStatus,
   ProgramStatus,
 } from "../generated/prisma";
@@ -8,6 +7,11 @@ import { prisma } from "../config/prisma";
 import { calendarService, type CalendarEventType } from "./calendar.service";
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
+import { orderedBatchCourses } from "../utils/course-sequence";
+import { zonedYmd } from "../utils/timezone";
+import { env } from "../config/env";
+import { batchTrainingStatus } from "./batch-funnel";
 
 export type DashboardRange = "week" | "month" | "quarter";
 
@@ -80,7 +84,7 @@ function eventHref(type: CalendarEventType, sourceId: string, programId: string)
   if (type === "EXAM") {
     return `/trainer/assessments/${sourceId}`;
   }
-  if (type === "SESSION" || type === "DEADLINE" || type === "MILESTONE" || type === "PROGRAM") {
+  if (type === "SESSION" || type === "DEADLINE" || type === "PROGRAM") {
     return type === "SESSION" ? "/trainer/calendar" : `/trainer/programs/${programId}`;
   }
   return "/trainer/calendar";
@@ -92,21 +96,24 @@ export const trainerDashboardService = {
     const programIds = await programService.listProgramIdsForTrainer(user.id);
     const now = new Date();
 
-    const [statisticsResult, programsResult, upcomingResult, submissionsResult, attentionResult] = await Promise.all([
+    const [statisticsResult, programsResult, batchesResult, upcomingResult, submissionsResult, attentionResult] = await Promise.all([
       settled(loadStatistics(programIds)),
       settled(loadPrograms(programIds)),
+      settled(loadBatches(user.id)),
       settled(loadUpcoming(user, now, end)),
       settled(loadRecentSubmissions(programIds, start)),
       settled(loadAttention(programIds)),
     ]);
 
     const upcoming = upcomingResult.data ?? [];
+    const batchItems = batchesResult.data ?? [];
     const statistics = statisticsResult.data ?? {
       programs: { total: 0, active: 0 },
       trainees: { total: 0 },
       pendingReviews: { total: 0 },
       upcomingAssessments: { total: upcoming.filter((item) => item.type === "EXAM").length },
       pendingSubmissions: { total: 0 },
+      batches: { total: 0, ongoing: 0 },
     };
 
     if (upcomingResult.data) {
@@ -114,6 +121,10 @@ export const trainerDashboardService = {
         total: upcoming.filter((item) => item.type === "EXAM").length,
       };
     }
+    statistics.batches = {
+      total: batchItems.length,
+      ongoing: batchItems.filter((item) => item.status === "ONGOING").length,
+    };
 
     return {
       range,
@@ -121,6 +132,7 @@ export const trainerDashboardService = {
       rangeEnd: end.toISOString(),
       statistics,
       programs: programsResult.data ?? [],
+      batches: batchesResult.data ?? [],
       upcoming,
       recentSubmissions: submissionsResult.data ?? [],
       attention: attentionResult.data ?? [],
@@ -157,7 +169,7 @@ export const trainerDashboardService = {
       prisma.enrollment.findMany({
         where: {
           programId: { in: programIds },
-          status: { not: EnrollmentStatus.WITHDRAWN },
+          status: ACTIVE_STATUS_FILTER,
           user: { OR: [{ name: contains }, { email: contains }] },
         },
         select: {
@@ -181,7 +193,6 @@ export const trainerDashboardService = {
             { programId: { in: programIds } },
             { week: { programId: { in: programIds } } },
             { day: { week: { programId: { in: programIds } } } },
-            { milestone: { programId: { in: programIds } } },
           ],
         },
         select: { id: true, title: true, kind: true },
@@ -248,7 +259,7 @@ async function loadStatistics(programIds: string[]) {
     prisma.program.count({ where: { id: { in: programIds } } }),
     prisma.program.count({ where: { id: { in: programIds }, status: { in: ACTIVE_PROGRAM } } }),
     prisma.enrollment.findMany({
-      where: { programId: { in: programIds }, status: { not: EnrollmentStatus.WITHDRAWN } },
+      where: { programId: { in: programIds }, status: ACTIVE_STATUS_FILTER },
       select: { userId: true },
       distinct: ["userId"],
     }),
@@ -269,7 +280,53 @@ async function loadStatistics(programIds: string[]) {
     pendingReviews: { total: pendingReviews },
     upcomingAssessments: { total: 0 },
     pendingSubmissions: { total: pendingSubmissions },
+    batches: { total: 0, ongoing: 0 },
   };
+}
+
+async function loadBatches(userId: string) {
+  const where = {
+    linkedFromBatchId: null,
+    OR: [{ createdByUserId: userId }, { trainers: { some: { userId } } }],
+  } as const;
+  const rows = await prisma.programBatch.findMany({
+    where,
+    include: {
+      program: { select: { id: true, title: true } },
+      linkedBatches: {
+        select: {
+          id: true,
+          programId: true,
+          sortOrder: true,
+          createdAt: true,
+          program: { select: { id: true, title: true } },
+        },
+        orderBy: [{ sortOrder: "asc" }, { createdAt: "asc" }],
+      },
+      _count: { select: { enrollments: { where: { status: ACTIVE_STATUS_FILTER } } } },
+    },
+    orderBy: [{ startDate: "desc" }, { createdAt: "desc" }],
+    take: 6,
+  });
+  const today = zonedYmd(new Date(), env.timezone);
+  return rows.map((batch) => {
+    const status = batchTrainingStatus(
+      {
+        startYmd: batch.startDate ? zonedYmd(batch.startDate, env.timezone) : null,
+        actualCompletionYmd: batch.actualCompletionDate ? zonedYmd(batch.actualCompletionDate, env.timezone) : null,
+      },
+      today,
+    );
+    return {
+      id: batch.id,
+      name: batch.name,
+      code: batch.code,
+      status,
+      memberCount: batch._count.enrollments,
+      courses: orderedBatchCourses(batch),
+      href: `/trainer/batch-tracker/${batch.id}`,
+    };
+  });
 }
 
 async function loadPrograms(programIds: string[]) {
@@ -288,7 +345,7 @@ async function loadPrograms(programIds: string[]) {
       startDate: true,
       endDate: true,
       enrollments: {
-        where: { status: { not: EnrollmentStatus.WITHDRAWN } },
+        where: { status: ACTIVE_STATUS_FILTER },
         select: { overallProgress: true, courseOutcome: true },
       },
     },

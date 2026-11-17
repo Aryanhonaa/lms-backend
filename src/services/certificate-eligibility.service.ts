@@ -1,7 +1,6 @@
 import {
   FeedbackTargetKind,
   IndividualRequirementStatus,
-  MilestoneRequirementKind,
   ProgramTrainerRole,
   QuizKind,
 } from "../generated/prisma";
@@ -15,7 +14,6 @@ const REQUIRED_ASSESSMENT_KINDS: QuizKind[] = [
   QuizKind.PRACTICE_QUIZ,
   QuizKind.WEEKLY_QUIZ,
   QuizKind.WEEKLY_EXAM,
-  QuizKind.MILESTONE_EXAM,
 ];
 
 export type CertificateRequirement = {
@@ -40,7 +38,6 @@ function collectQuizzes(program: ProgramTree) {
     ...program.quizzes,
     ...program.weeks.flatMap((week) => week.quizzes),
     ...program.weeks.flatMap((week) => week.days.flatMap((day) => day.quizzes)),
-    ...program.milestones.flatMap((milestone) => (milestone.exam ? [milestone.exam] : [])),
   ];
   const seen = new Set<string>();
   return rows.filter((quiz) => {
@@ -99,23 +96,6 @@ export const certificateEligibilityService = {
         label: `${quiz.title} passed`,
         met: quizState(facts, quiz.id).passed,
       });
-    }
-
-    for (const milestone of view.milestones) {
-      requirements.push({
-        key: `MILESTONE:${milestone.id}`,
-        label: `${milestone.title} complete`,
-        met: milestone.satisfied,
-      });
-      for (const requirement of milestone.requirements) {
-        if (requirement.kind === MilestoneRequirementKind.ATTENDANCE) {
-          requirements.push({
-            key: `ATTENDANCE:${requirement.label}`,
-            label: requirement.label,
-            met: requirement.complete,
-          });
-        }
-      }
     }
 
     for (const week of program.weeks) {

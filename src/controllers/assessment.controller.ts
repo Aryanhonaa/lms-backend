@@ -52,7 +52,12 @@ export const assessmentController = {
   async gradingQueue(req: Request, res: Response) {
     sendSuccess(
       res,
-      await assessmentService.gradingQueue(req.user!, queryString(req, "programId"), queryString(req, "view")),
+      await assessmentService.gradingQueue(
+        req.user!,
+        queryString(req, "programId"),
+        queryString(req, "view"),
+        queryString(req, "batchId"),
+      ),
     );
   },
 
@@ -62,5 +67,15 @@ export const assessmentController = {
 
   async gradeAttempt(req: Request, res: Response) {
     sendSuccess(res, await assessmentService.gradeAttempt(req.user!, routeParam(req, "id"), req.body.grades));
+  },
+
+  async setAnswerVisibility(req: Request, res: Response) {
+    sendSuccess(
+      res,
+      await assessmentService.setAnswerVisibility(req.user!, routeParam(req, "id"), {
+        batchId: req.body.batchId,
+        answersVisible: req.body.answersVisible,
+      }),
+    );
   },
 };

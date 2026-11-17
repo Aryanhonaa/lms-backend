@@ -1,0 +1,2 @@
+ALTER TABLE "Quiz" ADD COLUMN "shuffleOptions" BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE "Question" ADD COLUMN "keepOptionOrder" BOOLEAN NOT NULL DEFAULT true;

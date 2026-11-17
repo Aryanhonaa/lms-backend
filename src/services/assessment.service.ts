@@ -5,7 +5,6 @@ import {
   type Question,
   type QuestionOption,
 } from "../generated/prisma";
-import { prisma } from "../config/prisma";
 import { assessmentRepository } from "../repositories/assessment.repository";
 import { announcementRepository } from "../repositories/engagement.repository";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
@@ -47,21 +46,12 @@ type StoredAnswer = {
 type QuizRecord = NonNullable<Awaited<ReturnType<typeof assessmentRepository.findQuiz>>>;
 type QuizLocation = {
   programId: string | null;
-  program?: { title: string; createdByUserId?: string } | null;
-  week?: { programId: string; title?: string; program?: { title: string; createdByUserId?: string } | null } | null;
+  program?: { title: string } | null;
+  week?: { programId: string; title?: string; program?: { title: string } | null } | null;
   day?: {
     title?: string;
-    week: { programId: string; title?: string; program?: { title: string; createdByUserId?: string } | null };
+    week: { programId: string; title?: string; program?: { title: string } | null };
   } | null;
-  milestone?: { programId: string; title?: string; program?: { title: string; createdByUserId?: string } | null } | null;
-};
-
-type RevealQuiz = {
-  id: string;
-  title: string;
-  revealMode: "HIDDEN" | "IMMEDIATE" | "SCHEDULED";
-  revealAt: Date | null;
-  answersRevealedAnnouncedAt: Date | null;
 };
 
 function shuffle<T>(items: T[]): T[] {
@@ -82,8 +72,7 @@ function sameSet(left: string[], right: string[]): boolean {
 }
 
 function programIdFromQuiz(quiz: QuizLocation): string {
-  const programId =
-    quiz.programId ?? quiz.week?.programId ?? quiz.day?.week.programId ?? quiz.milestone?.programId;
+  const programId = quiz.programId ?? quiz.week?.programId ?? quiz.day?.week.programId;
   if (!programId) {
     throw ApiError.notFound("Assessment not found");
   }
@@ -95,80 +84,17 @@ function programTitleFromQuiz(quiz: QuizLocation): string {
     quiz.program?.title ??
     quiz.week?.program?.title ??
     quiz.day?.week.program?.title ??
-    quiz.milestone?.program?.title ??
     ""
   );
 }
 
-function programOwnerIdFromQuiz(quiz: QuizLocation): string | null {
-  return (
-    quiz.program?.createdByUserId ??
-    quiz.week?.program?.createdByUserId ??
-    quiz.day?.week.program?.createdByUserId ??
-    quiz.milestone?.program?.createdByUserId ??
-    null
-  );
-}
-
-/** Trainees see score only until a later per-batch answer release. */
-const TRAINEE_ANSWER_REVIEW_ENABLED = false;
-
-function answersVisibleToTrainee(quiz: Pick<RevealQuiz, "revealMode" | "revealAt">, now = new Date()) {
-  if (!TRAINEE_ANSWER_REVIEW_ENABLED) {
+/** Answer review is released per quiz + course batch (all trainees together). */
+async function answersVisibleForBatch(quizId: string, batchId: string | null | undefined) {
+  if (!batchId) {
     return false;
   }
-  if (quiz.revealMode === "HIDDEN") {
-    return false;
-  }
-  if (quiz.revealMode === "IMMEDIATE") {
-    return true;
-  }
-  return Boolean(quiz.revealAt && now.getTime() >= quiz.revealAt.getTime());
-}
-
-async function maybeAnnounceAnswersRevealed(quiz: RevealQuiz & QuizLocation) {
-  if (quiz.revealMode !== "SCHEDULED" || quiz.answersRevealedAnnouncedAt) {
-    return;
-  }
-  if (!answersVisibleToTrainee(quiz)) {
-    return;
-  }
-
-  const programId = programIdFromQuiz(quiz);
-  let createdByUserId = programOwnerIdFromQuiz(quiz);
-  let programTitle = programTitleFromQuiz(quiz);
-  if (!createdByUserId || !programTitle) {
-    const program = await prisma.program.findUnique({
-      where: { id: programId },
-      select: { createdByUserId: true, title: true },
-    });
-    createdByUserId = createdByUserId ?? program?.createdByUserId ?? null;
-    programTitle = programTitle || program?.title || "";
-  }
-  if (!createdByUserId) {
-    return;
-  }
-
-  const claimed = await prisma.quiz.updateMany({
-    where: {
-      id: quiz.id,
-      revealMode: "SCHEDULED",
-      answersRevealedAnnouncedAt: null,
-    },
-    data: { answersRevealedAnnouncedAt: new Date() },
-  });
-  if (claimed.count === 0) {
-    return;
-  }
-
-  const when = quiz.revealAt ? quiz.revealAt.toLocaleString() : "now";
-  await announcementRepository.create({
-    title: `Answers available: ${quiz.title}`,
-    body: `Correct answers for “${quiz.title}” in ${programTitle || "your program"} are now visible (${when}).`,
-    audience: "PROGRAM",
-    programId,
-    createdByUserId,
-  });
+  const release = await assessmentRepository.findAnswerRelease(quizId, batchId);
+  return Boolean(release?.answersVisible);
 }
 
 function parseSnapshot(value: unknown): SnapshotItem[] {
@@ -215,21 +141,22 @@ function buildSnapshot(
   questions: Array<Question & { options: QuestionOption[] }>,
   randomized: boolean,
   drawCount: number | null,
+  shuffleOptions = false,
 ): SnapshotItem[] {
   const written = questions.filter((question) => question.type === QuestionType.WRITTEN);
   const choice = questions.filter((question) => question.type !== QuestionType.WRITTEN);
   const size = drawSize(questions.length, written.length, drawCount);
   const drawing = size < questions.length;
   const shuffleQuestions = randomized || drawing;
-  const shuffleOptions = randomized || drawing;
   const drawnChoice = drawing ? shuffle(choice).slice(0, size - written.length) : choice;
   const pool = [...written, ...drawnChoice];
   const selected = shuffleQuestions ? shuffle(pool) : bySortOrder(pool);
   return selected.map((question) => {
-    const options = shuffleOptions
-      ? shuffle(question.options)
-      : [...question.options].sort((a, b) => a.sortOrder - b.sortOrder);
-    return { questionId: question.id, optionIds: options.map((option) => option.id) };
+    const options = bySortOrder(question.options);
+    const keepOrder = question.type === QuestionType.WRITTEN || question.keepOptionOrder !== false;
+    const optionIds =
+      shuffleOptions && !keepOrder ? shuffle(options).map((option) => option.id) : options.map((option) => option.id);
+    return { questionId: question.id, optionIds };
   });
 }
 
@@ -247,7 +174,7 @@ function safeQuestions(
     if (!question) {
       return [];
     }
-    const optionMap = new Map(question.options.map((option) => [option.id, option]));
+    const allowed = new Set(item.optionIds);
     const selected = answerMap.get(question.id);
     return [
       {
@@ -265,19 +192,13 @@ function safeQuestions(
               correctOptionIds: question.options.filter((option) => option.isCorrect).map((option) => option.id),
             }
           : {}),
-        options: item.optionIds.flatMap((optionId) => {
-          const option = optionMap.get(optionId);
-          if (!option) {
-            return [];
-          }
-          return [
-            {
-              id: option.id,
-              label: option.label,
-              ...(revealKeys ? { isCorrect: option.isCorrect } : {}),
-            },
-          ];
-        }),
+        options: bySortOrder(question.options)
+          .filter((option) => allowed.has(option.id))
+          .map((option) => ({
+            id: option.id,
+            label: option.label,
+            ...(revealKeys ? { isCorrect: option.isCorrect } : {}),
+          })),
       },
     ];
   });
@@ -406,15 +327,12 @@ function writtenQuestionCount(quiz: { questions: Array<{ type: QuestionType }> }
   return quiz.questions.filter((question) => question.type === QuestionType.WRITTEN).length;
 }
 
-function locationLabel(quiz: QuizLocation & { day?: { title: string; week: { title: string } } | null; week?: { title: string } | null; milestone?: { title: string } | null }) {
+function locationLabel(quiz: QuizLocation & { day?: { title: string; week: { title: string } } | null; week?: { title: string } | null }) {
   if (quiz.day) {
     return `${quiz.day.week.title} · ${quiz.day.title}`;
   }
   if (quiz.week) {
     return quiz.week.title;
-  }
-  if (quiz.milestone) {
-    return quiz.milestone.title;
   }
   return "Program";
 }
@@ -464,6 +382,7 @@ function toAttemptPayload(
     passed: boolean | null;
     needsReview?: boolean;
     gradedAt?: Date | null;
+    gradedBy?: { id: string; name: string; email: string } | null;
     questionSnapshot: unknown;
     answers?: StoredAnswer[];
   },
@@ -483,6 +402,7 @@ function toAttemptPayload(
     passed: closed ? attempt.passed : null,
     needsReview: closed ? Boolean(attempt.needsReview) : false,
     gradedAt: attempt.gradedAt ?? null,
+    gradedBy: closed ? (attempt.gradedBy ?? null) : null,
     passingScore: quiz.passingScore,
     answersVisible: revealKeys,
     questions:
@@ -500,10 +420,44 @@ function toAttemptPayload(
   };
 }
 
-async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
-  await maybeAnnounceAnswersRevealed(quiz);
+function catalogPreference(row: {
+  assessment: { answersVisible?: boolean; status: string };
+  attemptsUsed: number;
+  passed: boolean;
+}): number {
+  let score = 0;
+  if (row.assessment.answersVisible) {
+    score += 8;
+  }
+  if (row.attemptsUsed > 0) {
+    score += 4;
+  }
+  if (row.passed) {
+    score += 2;
+  }
+  if (row.assessment.status !== "LOCKED") {
+    score += 1;
+  }
+  return score;
+}
+
+async function resolveTraineeBatchId(userId: string, programId: string, quizId: string, preferredBatchId?: string) {
+  if (preferredBatchId) {
+    return preferredBatchId;
+  }
+  const closed = await assessmentRepository.findLatestClosedAttemptForUserQuiz(userId, quizId);
+  if (closed?.enrollment.batchId) {
+    return closed.enrollment.batchId;
+  }
+  const { enrollment } = await progressService.requireEnrollment(userId, programId);
+  return enrollment.batchId;
+}
+
+async function catalogForQuiz(user: AuthUser, quiz: QuizRecord, preferredBatchId?: string) {
   const programId = programIdFromQuiz(quiz);
-  const view = await progressService.getComputation(user, programId);
+  const batchId = await resolveTraineeBatchId(user.id, programId, quiz.id, preferredBatchId);
+  const { enrollment } = await progressService.requireEnrollment(user.id, programId, batchId);
+  const view = await progressService.getComputation(user, programId, enrollment.batchId);
   const access = progressService.quizAccess(view, quiz.id);
   const attempts = await assessmentRepository.findAttemptsForEnrollment(view.enrollment.id, quiz.id);
   const open = attempts.find((row) => row.status === AssessmentAttemptStatus.IN_PROGRESS);
@@ -518,6 +472,7 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
     access.status !== "LOCKED" &&
     quiz.questions.length > 0 &&
     (summary.activeAttemptId !== null || (!summary.pendingReview && (remaining === null || remaining > 0)));
+  const answersVisible = await answersVisibleForBatch(quiz.id, enrollment.batchId);
 
   return {
     assessment: {
@@ -535,7 +490,7 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
       writtenQuestionCount: writtenQuestionCount(quiz),
       revealMode: quiz.revealMode,
       revealAt: quiz.revealAt,
-      answersVisible: answersVisibleToTrainee(quiz),
+      answersVisible,
       programId,
       programTitle: view.program.title,
       location: locationLabel(quiz),
@@ -556,14 +511,18 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
 export const assessmentService = {
   async listForTrainee(user: AuthUser) {
     const enrollments = await progressService.listSummaries(user.id);
-    const assessments = [];
+    const byQuiz = new Map<string, Awaited<ReturnType<typeof catalogForQuiz>>>();
     for (const enrollment of enrollments) {
       const quizzes = await assessmentRepository.findQuizzesForProgram(enrollment.program.id);
       for (const quiz of quizzes) {
-        assessments.push(await catalogForQuiz(user, quiz));
+        const catalog = await catalogForQuiz(user, quiz, enrollment.batch?.id);
+        const current = byQuiz.get(quiz.id);
+        if (!current || catalogPreference(catalog) > catalogPreference(current)) {
+          byQuiz.set(quiz.id, catalog);
+        }
       }
     }
-    return { assessments };
+    return { assessments: [...byQuiz.values()] };
   },
 
   async getForTrainee(user: AuthUser, quizId: string) {
@@ -573,9 +532,10 @@ export const assessmentService = {
 
   async startAttempt(user: AuthUser, quizId: string) {
     const quiz = await requireQuiz(quizId);
-    const catalog = await catalogForQuiz(user, quiz);
     const programId = programIdFromQuiz(quiz);
-    const view = await progressService.getComputation(user, programId);
+    const batchId = await resolveTraineeBatchId(user.id, programId, quiz.id);
+    const catalog = await catalogForQuiz(user, quiz, batchId);
+    const view = await progressService.getComputation(user, programId, batchId);
 
     if (catalog.assessment.status === "LOCKED") {
       throw new ApiError(403, catalog.assessment.reason ?? "This assessment is locked", "CONTENT_LOCKED");
@@ -615,7 +575,12 @@ export const assessmentService = {
       quizId: quiz.id,
       attemptNumber,
       deadlineAt,
-      questionSnapshot: buildSnapshot(quiz.questions, quiz.randomized, quiz.questionDrawCount),
+      questionSnapshot: buildSnapshot(
+        quiz.questions,
+        quiz.randomized,
+        quiz.questionDrawCount,
+        quiz.shuffleOptions,
+      ),
     });
 
     return { created: true, attempt: toAttemptPayload(quiz, created, false, false) };
@@ -630,8 +595,7 @@ export const assessmentService = {
     const timedOut = await closeExpired(attempt, attempt.quiz);
     const current = timedOut ?? attempt;
     const closed = closedStatuses(current.status);
-    await maybeAnnounceAnswersRevealed(attempt.quiz);
-    const revealKeys = closed && answersVisibleToTrainee(attempt.quiz);
+    const revealKeys = closed && (await answersVisibleForBatch(attempt.quiz.id, attempt.enrollment.batchId));
     return { attempt: toAttemptPayload(attempt.quiz, current, closed, revealKeys) };
   },
 
@@ -657,10 +621,9 @@ export const assessmentService = {
       answers: graded,
     });
 
-    await progressService.getComputation(user, programIdFromQuiz(attempt.quiz));
-    await maybeAnnounceAnswersRevealed(attempt.quiz);
+    await progressService.getComputation(user, programIdFromQuiz(attempt.quiz), attempt.enrollment.batchId);
     const closed = true;
-    const revealKeys = answersVisibleToTrainee(attempt.quiz);
+    const revealKeys = await answersVisibleForBatch(attempt.quiz.id, attempt.enrollment.batchId);
 
     return {
       attempt: toAttemptPayload(attempt.quiz, { ...attempt, ...saved }, closed, revealKeys),
@@ -706,17 +669,17 @@ export const assessmentService = {
     };
   },
 
-  async gradingQueue(user: AuthUser, programIdRaw?: unknown, viewRaw?: unknown) {
+  async gradingQueue(user: AuthUser, programIdRaw?: unknown, viewRaw?: unknown, batchIdRaw?: unknown) {
     const view = viewRaw === "graded" ? "graded" : "pending";
-    const scope = await resolveTrainerWorkScope(user, programIdRaw);
+    const scope = await resolveTrainerWorkScope(user, programIdRaw, batchIdRaw);
     const quizzes = await assessmentRepository.findQuizzesForTrainer(scope.programIds);
     const quizById = new Map(quizzes.map((quiz) => [quiz.id, quiz]));
     const quizIds = quizzes.map((quiz) => quiz.id);
     const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const [rows, pending, gradedThisWeek] = await Promise.all([
-      assessmentRepository.findGradingQueue(quizIds, view, view === "graded" ? weekAgo : undefined),
-      assessmentRepository.countPendingReviewForPrograms(scope.programIds),
-      assessmentRepository.countGradedSince(quizIds, weekAgo),
+      assessmentRepository.findGradingQueue(quizIds, view, view === "graded" ? weekAgo : undefined, scope.batchId),
+      assessmentRepository.countPendingReviewForPrograms(scope.programIds, scope.batchId),
+      assessmentRepository.countGradedSince(quizIds, weekAgo, scope.batchId),
     ]);
 
     const items = rows.flatMap((row) => {
@@ -735,6 +698,7 @@ export const assessmentService = {
           needsReview: row.needsReview,
           submittedAt: row.submittedAt,
           gradedAt: row.gradedAt,
+          gradedBy: row.gradedBy ?? null,
           enrollmentId: row.enrollmentId,
           pendingAnswerCount: row.answers.filter((answer) => answer.needsReview).length,
           writtenAnswerCount: writtenAnswers.length,
@@ -779,7 +743,6 @@ export const assessmentService = {
       throw ApiError.badRequest("Assessment does not belong to that course");
     }
     await programService.requireTrainerOnProgram(user, programId);
-    await maybeAnnounceAnswersRevealed(quiz);
     const attempts = await assessmentRepository.findAttemptsForQuiz(quiz.id, scope.batchId);
     const enrollments = await enrollmentRepository.findRoster(programId, scope.batchId);
     const byEnrollment = new Map<string, typeof attempts>();
@@ -810,6 +773,7 @@ export const assessmentService = {
               passed: latest.passed,
               needsReview: latest.needsReview,
               gradedAt: latest.gradedAt,
+              gradedBy: latest.gradedBy ?? null,
               startedAt: latest.startedAt,
               submittedAt: latest.submittedAt,
               answers: latest.answers,
@@ -837,6 +801,10 @@ export const assessmentService = {
     const needsReviewCount = closedLatest.length - gradedLatest.length;
     const inProgressCount = roster.filter((row) => row.status === AssessmentAttemptStatus.IN_PROGRESS).length;
     const notStartedCount = roster.filter((row) => row.latest === null).length;
+    const answersVisible = scope.batchId
+      ? await answersVisibleForBatch(quiz.id, scope.batchId)
+      : false;
+    const canRevealAnswers = Boolean(scope.batchId) && roster.length > 0 && submittedCount === roster.length;
 
     return {
       assessment: {
@@ -884,6 +852,9 @@ export const assessmentService = {
           gradedLatest.length === 0
             ? null
             : Math.round((gradedLatest.filter((row) => row.passed === true).length / gradedLatest.length) * 10000) / 100,
+        answersVisible,
+        canRevealAnswers,
+        pendingSubmitCount: Math.max(roster.length - submittedCount, 0),
       },
       attempts: attempts.map((attempt) => ({
         id: attempt.id,
@@ -900,6 +871,53 @@ export const assessmentService = {
         answers: attempt.answers,
       })),
       roster,
+    };
+  },
+
+  async setAnswerVisibility(
+    user: AuthUser,
+    quizId: string,
+    input: { batchId: string; answersVisible: boolean },
+  ) {
+    const quiz = await requireQuiz(quizId);
+    const programId = programIdFromQuiz(quiz);
+    const scope = await resolveTrainerWorkScope(user, programId, input.batchId);
+    if (!scope.batchId || !scope.programIds.includes(programId)) {
+      throw ApiError.forbidden();
+    }
+    await programService.requireTrainerOnProgram(user, programId);
+
+    const enrollments = await enrollmentRepository.findRoster(programId, scope.batchId);
+    if (enrollments.length === 0) {
+      throw ApiError.badRequest("No trainees are enrolled in this batch yet.");
+    }
+
+    const release = await assessmentRepository.upsertAnswerRelease({
+      quizId: quiz.id,
+      batchId: scope.batchId,
+      answersVisible: input.answersVisible,
+      revealedByUserId: user.id,
+    });
+
+    if (input.answersVisible) {
+      const programTitle = programTitleFromQuiz(quiz);
+      await announcementRepository.create({
+        title: `Answers available: ${quiz.title}`,
+        body: `Your trainer released the answer review for “${quiz.title}”${
+          programTitle ? ` in ${programTitle}` : ""
+        }. Open the quiz to see your answers, the correct answers, and marks for each question.\n\n[[action:/trainee/assessments/${quiz.id}?review=answers]]`,
+        audience: "PROGRAM",
+        programId,
+        batchId: scope.batchId,
+        createdByUserId: user.id,
+      });
+    }
+
+    return {
+      quizId: quiz.id,
+      batchId: scope.batchId,
+      answersVisible: release.answersVisible,
+      revealedAt: release.revealedAt,
     };
   },
 
@@ -974,7 +992,7 @@ export const assessmentService = {
       const programTitle = programTitleFromQuiz(attempt.quiz);
       await announcementRepository.create({
         title: `${regrade ? "Grade updated" : "Graded"}: ${attempt.quiz.title}`,
-        body: `Your trainer ${regrade ? "updated the grade for" : "graded"} “${attempt.quiz.title}”${
+        body: `${user.name} ${regrade ? "updated the grade for" : "graded"} “${attempt.quiz.title}”${
           programTitle ? ` in ${programTitle}` : ""
         }. Your score is ${score}% (${passed ? "passed" : `pass mark ${attempt.quiz.passingScore}%`}).`,
         audience: "TRAINEES_SELECTED",
@@ -992,6 +1010,7 @@ export const assessmentService = {
         passed: saved.passed,
         needsReview: saved.needsReview,
         gradedAt: saved.gradedAt,
+        gradedBy: saved.gradedBy ?? null,
         answers: saved.answers,
       },
     };

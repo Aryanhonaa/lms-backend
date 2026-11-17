@@ -1,7 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
+  addDays,
   quizCanRetry,
   quizClearsProgressionGate,
+  scheduledOpensAt,
+  unlockService,
+  type AccessResult,
   type QuizAttemptState,
   type TraineeFacts,
 } from "../src/services/unlock.service";
@@ -78,5 +82,30 @@ describe("quiz progression gate", () => {
 
   it("does not clear the gate before the quiz is attempted", () => {
     expect(quizClearsProgressionGate({ id: quizId, maxAttempts: 1 }, facts(unused))).toBe(false);
+  });
+});
+
+describe("scheduled day unlock", () => {
+  const openWeek: AccessResult = { status: "AVAILABLE", available: true, reason: null };
+  const start = new Date(Date.UTC(2026, 10, 17));
+
+  it("opens day 1 on the start date and day 2 the next calendar day", () => {
+    const midday = new Date(Date.UTC(2026, 10, 17, 12));
+    expect(scheduledOpensAt(start, 0)?.toISOString()).toBe(start.toISOString());
+    expect(scheduledOpensAt(start, 1)?.toISOString()).toBe(addDays(start, 1).toISOString());
+
+    const day1 = unlockService.dayAccess("SCHEDULED", openWeek, true, null, start, 0, midday);
+    const day2 = unlockService.dayAccess("SCHEDULED", openWeek, true, "Day 1", start, 1, midday);
+    expect(day1.status).toBe("AVAILABLE");
+    expect(day2.status).toBe("LOCKED");
+    expect(day2.reason).toMatch(/opens on/i);
+  });
+
+  it("lets progression open the next day as soon as the previous day is complete", () => {
+    const sameDay = new Date(Date.UTC(2026, 10, 17, 18));
+    const waiting = unlockService.dayAccess("PROGRESSION", openWeek, false, "Day 1", start, 1, sameDay);
+    const ready = unlockService.dayAccess("PROGRESSION", openWeek, true, "Day 1", start, 1, sameDay);
+    expect(waiting.status).toBe("LOCKED");
+    expect(ready.status).toBe("AVAILABLE");
   });
 });

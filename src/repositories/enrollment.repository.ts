@@ -27,7 +27,17 @@ const progressFactsInclude = {
     select: { status: true },
   },
   program: true,
-  batch: { select: { id: true, name: true, capacity: true, startDate: true, endDate: true } },
+  batch: {
+    select: {
+      id: true,
+      name: true,
+      capacity: true,
+      startDate: true,
+      endDate: true,
+      sortOrder: true,
+      linkedFromBatchId: true,
+    },
+  },
 } as const;
 
 export const enrollmentRepository = {
@@ -57,7 +67,17 @@ export const enrollmentRepository = {
       where: { userId, status: ACTIVE_STATUS_FILTER },
       include: {
         program: true,
-        batch: { select: { id: true, name: true, capacity: true, startDate: true, endDate: true } },
+        batch: {
+          select: {
+            id: true,
+            name: true,
+            capacity: true,
+            startDate: true,
+            endDate: true,
+            sortOrder: true,
+            linkedFromBatchId: true,
+          },
+        },
       },
       orderBy: { createdAt: "desc" },
     });

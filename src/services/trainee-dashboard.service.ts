@@ -1,3 +1,4 @@
+import { AssessmentAttemptStatus } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { announcementService } from "./announcement.service";
 import { assignmentService } from "./assignment.service";
@@ -6,9 +7,14 @@ import { leaderboardService } from "./leaderboard.service";
 import { progressService } from "./progress.service";
 import { resolveDashboardRange } from "./trainer-dashboard.service";
 import type { AuthUser } from "../types";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 
 const ACTIONABLE_SUBMISSION = new Set(["NOT_STARTED", "IN_PROGRESS", "CHANGES_REQUESTED"]);
 const DONE_LEARNING = new Set(["COMPLETED", "PASSED"]);
+const CLOSED_ATTEMPT = new Set<AssessmentAttemptStatus>([
+  AssessmentAttemptStatus.SUBMITTED,
+  AssessmentAttemptStatus.TIMED_OUT,
+]);
 
 function sectionError(error: unknown): string {
   return error instanceof Error ? error.message : "Unable to load this section.";
@@ -80,17 +86,19 @@ export const traineeDashboardService = {
     const enrollments = await progressService.listSummaries(user.id);
     const primary = enrollments[0] ?? null;
 
-    const [learningResult, upcomingResult, assignmentsResult, announcementsResult, leaderboardResult] =
+    const [learningResult, upcomingResult, assignmentsResult, announcementsResult, leaderboardResult, answerReviewsResult] =
       await Promise.all([
         settled(primary ? loadLearning(user, primary.program.id, primary.batch?.id) : Promise.resolve(null)),
         settled(loadUpcoming(user, now, end)),
         settled(loadPendingAssignments(user)),
         settled(loadAnnouncements(user)),
         settled(primary ? loadTopStudent(user, primary.program.id) : Promise.resolve(null)),
+        settled(loadAnswerReviews(user.id)),
       ]);
 
     const upcoming = upcomingResult.data ?? [];
     const pendingAssignments = assignmentsResult.data ?? [];
+    const answerReviews = answerReviewsResult.data ?? [];
     const progressValues = enrollments.map((row) => row.progress.percent);
     const overallProgress =
       progressValues.length === 0
@@ -111,11 +119,13 @@ export const traineeDashboardService = {
         overallProgress: { percent: overallProgress },
         pendingAssignments: { total: pendingAssignments.length },
         upcomingAssessments: { total: upcoming.filter((item) => item.type === "EXAM").length },
+        answerReviews: { total: answerReviews.length },
       },
       currentLearning: learningResult.data,
       topStudent: leaderboardResult.data,
       upcoming,
       pendingAssignments,
+      answerReviews,
       announcements: announcementsResult.data ?? [],
       otherPrograms: enrollments.slice(1).map((row) => ({
         id: row.id,
@@ -130,6 +140,7 @@ export const traineeDashboardService = {
         assignments: assignmentsResult.error,
         announcements: announcementsResult.error,
         topStudent: leaderboardResult.error,
+        answerReviews: answerReviewsResult.error,
       },
     };
   },
@@ -161,7 +172,6 @@ export const traineeDashboardService = {
                 { programId: { in: programIds } },
                 { week: { programId: { in: programIds } } },
                 { day: { week: { programId: { in: programIds } } } },
-                { milestone: { programId: { in: programIds } } },
               ],
             },
             select: { id: true, title: true, kind: true },
@@ -255,8 +265,6 @@ async function loadLearning(user: AuthUser, programId: string, batchId?: string 
     progressService.getProgressView(user, programId, batchId ?? undefined),
   ]);
 
-  const completedMilestones = progress.milestones.filter((item) => item.satisfied).slice(-4);
-  const upcomingMilestone = progress.milestones.find((item) => !item.satisfied) ?? null;
   const batchQuery = batchId ? `&batchId=${encodeURIComponent(batchId)}` : "";
 
   return {
@@ -279,11 +287,6 @@ async function loadLearning(user: AuthUser, programId: string, batchId?: string 
     assignmentsHref: "/trainee/assignments",
     programHref: `/trainee/program?programId=${programId}${batchQuery}`,
     progressHref: `/trainee/progress?programId=${programId}${batchQuery}`,
-    milestones: {
-      completed: completedMilestones.map((item) => ({ id: item.id, title: item.title })),
-      upcoming: upcomingMilestone ? { id: upcomingMilestone.id, title: upcomingMilestone.title } : null,
-      current: progress.currentMilestone,
-    },
   };
 }
 
@@ -328,6 +331,90 @@ async function loadAnnouncements(user: AuthUser) {
     createdAt: item.createdAt instanceof Date ? item.createdAt.toISOString() : String(item.createdAt),
     href: "/trainee/announcements",
   }));
+}
+
+async function loadAnswerReviews(userId: string) {
+  const enrollments = await prisma.enrollment.findMany({
+    where: { userId, status: ACTIVE_STATUS_FILTER },
+    select: {
+      id: true,
+      batchId: true,
+      program: { select: { title: true } },
+      batch: { select: { name: true } },
+    },
+  });
+  if (enrollments.length === 0) {
+    return [];
+  }
+
+  const byBatch = new Map(enrollments.map((row) => [row.batchId, row]));
+  const releases = await prisma.quizBatchAnswerRelease.findMany({
+    where: {
+      answersVisible: true,
+      batchId: { in: [...byBatch.keys()] },
+    },
+    select: {
+      quizId: true,
+      batchId: true,
+      revealedAt: true,
+      quiz: { select: { id: true, title: true, kind: true } },
+    },
+    orderBy: [{ revealedAt: "desc" }, { updatedAt: "desc" }],
+    take: 24,
+  });
+  if (releases.length === 0) {
+    return [];
+  }
+
+  const enrollmentIds = enrollments.map((row) => row.id);
+  const quizIds = [...new Set(releases.map((row) => row.quizId))];
+  const attempts = await prisma.assessmentAttempt.findMany({
+    where: {
+      enrollmentId: { in: enrollmentIds },
+      quizId: { in: quizIds },
+      status: { in: [...CLOSED_ATTEMPT] },
+    },
+    select: {
+      quizId: true,
+      enrollmentId: true,
+      score: true,
+      passed: true,
+      submittedAt: true,
+      attemptNumber: true,
+    },
+    orderBy: [{ attemptNumber: "desc" }],
+  });
+  const latestAttempt = new Map<string, (typeof attempts)[number]>();
+  for (const attempt of attempts) {
+    const key = `${attempt.enrollmentId}:${attempt.quizId}`;
+    if (!latestAttempt.has(key)) {
+      latestAttempt.set(key, attempt);
+    }
+  }
+
+  const rows = [];
+  for (const release of releases) {
+    const enrollment = byBatch.get(release.batchId);
+    if (!enrollment) {
+      continue;
+    }
+    const attempt = latestAttempt.get(`${enrollment.id}:${release.quizId}`);
+    if (!attempt) {
+      continue;
+    }
+    rows.push({
+      quizId: release.quiz.id,
+      title: release.quiz.title,
+      kind: release.quiz.kind,
+      programTitle: enrollment.program.title,
+      batchName: enrollment.batch?.name ?? null,
+      score: attempt.score === null ? null : Number(attempt.score),
+      passed: attempt.passed,
+      revealedAt: release.revealedAt?.toISOString() ?? null,
+      href: `/trainee/assessments/${release.quiz.id}?review=answers`,
+    });
+  }
+  return rows.slice(0, 8);
 }
 
 async function loadTopStudent(user: AuthUser, programId: string) {

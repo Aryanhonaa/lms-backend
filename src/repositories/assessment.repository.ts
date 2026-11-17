@@ -13,10 +13,9 @@ const questionsQuery = {
 async function withLocation<T extends {
   dayId: string | null;
   weekId: string | null;
-  milestoneId: string | null;
   programId: string | null;
 }>(quiz: T) {
-  const [day, week, milestone, program] = await Promise.all([
+  const [day, week, program] = await Promise.all([
     quiz.dayId
       ? prisma.day.findUnique({
           where: { id: quiz.dayId },
@@ -29,16 +28,10 @@ async function withLocation<T extends {
           include: { program: true },
         })
       : Promise.resolve(null),
-    quiz.milestoneId
-      ? prisma.milestone.findUnique({
-          where: { id: quiz.milestoneId },
-          include: { program: true },
-        })
-      : Promise.resolve(null),
     quiz.programId ? prisma.program.findUnique({ where: { id: quiz.programId } }) : Promise.resolve(null),
   ]);
 
-  return { ...quiz, day, week, milestone, program };
+  return { ...quiz, day, week, program };
 }
 
 export const assessmentRepository = {
@@ -57,7 +50,6 @@ export const assessmentRepository = {
           { programId },
           { week: { programId } },
           { day: { week: { programId } } },
-          { milestone: { programId } },
         ],
       },
       include: { questions: questionsQuery },
@@ -76,7 +68,6 @@ export const assessmentRepository = {
           { programId: { in: programIds } },
           { week: { programId: { in: programIds } } },
           { day: { week: { programId: { in: programIds } } } },
-          { milestone: { programId: { in: programIds } } },
         ],
       },
       include: {
@@ -96,6 +87,23 @@ export const assessmentRepository = {
         quiz: { select: { id: true, title: true, kind: true, passingScore: true } },
       },
       orderBy: { attemptNumber: "asc" },
+    });
+  },
+
+  /** Latest closed attempt for this trainee on a quiz, across all of their enrollments. */
+  findLatestClosedAttemptForUserQuiz(userId: string, quizId: string) {
+    return prisma.assessmentAttempt.findFirst({
+      where: {
+        quizId,
+        status: { in: [AssessmentAttemptStatus.SUBMITTED, AssessmentAttemptStatus.TIMED_OUT] },
+        enrollment: { userId, status: { notIn: ["WITHDRAWN", "TERMINATED", "REMOVED"] } },
+      },
+      select: {
+        id: true,
+        enrollmentId: true,
+        enrollment: { select: { batchId: true, programId: true } },
+      },
+      orderBy: [{ submittedAt: "desc" }, { createdAt: "desc" }],
     });
   },
 
@@ -125,6 +133,7 @@ export const assessmentRepository = {
       },
       include: {
         answers: true,
+        gradedBy: { select: { id: true, name: true, email: true } },
         enrollment: {
           include: {
             user: { select: { id: true, name: true, email: true } },
@@ -148,6 +157,7 @@ export const assessmentRepository = {
       where: { id },
       include: {
         answers: true,
+        gradedBy: { select: { id: true, name: true, email: true } },
         enrollment: true,
         quiz: {
           include: { questions: questionsQuery },
@@ -271,12 +281,15 @@ export const assessmentRepository = {
           gradedAt: new Date(),
           gradedByUserId: input.gradedByUserId,
         },
-        include: { answers: true },
+        include: {
+          answers: true,
+          gradedBy: { select: { id: true, name: true, email: true } },
+        },
       });
     });
   },
 
-  findGradingQueue(quizIds: string[], view: "pending" | "graded", gradedSince?: Date) {
+  findGradingQueue(quizIds: string[], view: "pending" | "graded", gradedSince?: Date, batchId?: string) {
     if (quizIds.length === 0) {
       return Promise.resolve([]);
     }
@@ -284,6 +297,7 @@ export const assessmentRepository = {
       where: {
         quizId: { in: quizIds },
         status: { in: [AssessmentAttemptStatus.SUBMITTED, AssessmentAttemptStatus.TIMED_OUT] },
+        ...(batchId ? { enrollment: { batchId } } : {}),
         ...(view === "pending"
           ? { needsReview: true }
           : { needsReview: false, gradedAt: { not: null, ...(gradedSince ? { gte: gradedSince } : {}) } }),
@@ -299,6 +313,7 @@ export const assessmentRepository = {
         submittedAt: true,
         gradedAt: true,
         enrollmentId: true,
+        gradedBy: { select: { id: true, name: true, email: true } },
         answers: { select: { needsReview: true, textAnswer: true } },
         enrollment: {
           select: {
@@ -312,16 +327,21 @@ export const assessmentRepository = {
     });
   },
 
-  countGradedSince(quizIds: string[], since: Date) {
+  countGradedSince(quizIds: string[], since: Date, batchId?: string) {
     if (quizIds.length === 0) {
       return Promise.resolve(0);
     }
     return prisma.assessmentAttempt.count({
-      where: { quizId: { in: quizIds }, needsReview: false, gradedAt: { gte: since } },
+      where: {
+        quizId: { in: quizIds },
+        needsReview: false,
+        gradedAt: { gte: since },
+        ...(batchId ? { enrollment: { batchId } } : {}),
+      },
     });
   },
 
-  countPendingReviewForPrograms(programIds: string[]) {
+  countPendingReviewForPrograms(programIds: string[], batchId?: string) {
     if (programIds.length === 0) {
       return Promise.resolve(0);
     }
@@ -329,12 +349,12 @@ export const assessmentRepository = {
       where: {
         needsReview: true,
         status: { in: [AssessmentAttemptStatus.SUBMITTED, AssessmentAttemptStatus.TIMED_OUT] },
+        ...(batchId ? { enrollment: { batchId } } : {}),
         quiz: {
           OR: [
             { programId: { in: programIds } },
             { week: { programId: { in: programIds } } },
             { day: { week: { programId: { in: programIds } } } },
-            { milestone: { programId: { in: programIds } } },
           ],
         },
       },
@@ -359,5 +379,35 @@ export const assessmentRepository = {
       counts.set(row.quizId, row._count._all);
     }
     return counts;
+  },
+
+  findAnswerRelease(quizId: string, batchId: string) {
+    return prisma.quizBatchAnswerRelease.findUnique({
+      where: { quizId_batchId: { quizId, batchId } },
+    });
+  },
+
+  upsertAnswerRelease(input: {
+    quizId: string;
+    batchId: string;
+    answersVisible: boolean;
+    revealedByUserId: string | null;
+  }) {
+    const revealedAt = input.answersVisible ? new Date() : null;
+    return prisma.quizBatchAnswerRelease.upsert({
+      where: { quizId_batchId: { quizId: input.quizId, batchId: input.batchId } },
+      create: {
+        quizId: input.quizId,
+        batchId: input.batchId,
+        answersVisible: input.answersVisible,
+        revealedAt,
+        revealedByUserId: input.answersVisible ? input.revealedByUserId : null,
+      },
+      update: {
+        answersVisible: input.answersVisible,
+        revealedAt,
+        revealedByUserId: input.answersVisible ? input.revealedByUserId : null,
+      },
+    });
   },
 };

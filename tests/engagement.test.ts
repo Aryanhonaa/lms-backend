@@ -128,11 +128,6 @@ describe("engagement features", () => {
       });
     ids.examId = exam.body.data.program.weeks[0].quizzes.find((quiz: { kind: string }) => quiz.kind === "WEEKLY_EXAM").id as string;
 
-    await request(app)
-      .post(`/api/v1/trainer/programs/${ids.programId}/milestones`)
-      .set("Cookie", trainerCookie)
-      .send({ title: "Checkpoint", afterWeekIndex: 0 });
-
     const sessionRes = await request(app)
       .post(`/api/v1/trainer/weeks/${ids.weekId}/sessions`)
       .set("Cookie", trainerCookie)
@@ -264,8 +259,6 @@ describe("engagement features", () => {
           "quizzesTotal",
           "examsPassed",
           "examsTotal",
-          "milestonesComplete",
-          "milestonesTotal",
         ].sort(),
       );
     }

@@ -46,18 +46,8 @@ export const curriculumRepository = {
       include: {
         day: { include: { week: { include: { program: true } } } },
         week: { include: { program: true } },
-        milestone: { include: { program: true } },
         program: true,
       },
-    });
-  },
-  milestone(id: string) {
-    return prisma.milestone.findUnique({ where: { id }, include: { program: true } });
-  },
-  requirement(id: string) {
-    return prisma.milestoneRequirement.findUnique({
-      where: { id },
-      include: { milestone: { include: { program: true } } },
     });
   },
   session(id: string) {
@@ -92,17 +82,6 @@ export const curriculumRepository = {
   },
   async nextAssignmentOrder(dayId: string) {
     const result = await prisma.assignment.aggregate({ where: { dayId }, _max: { sortOrder: true } });
-    return (result._max.sortOrder ?? -1) + 1;
-  },
-  async nextMilestoneOrder(programId: string) {
-    const result = await prisma.milestone.aggregate({ where: { programId }, _max: { sortOrder: true } });
-    return (result._max.sortOrder ?? -1) + 1;
-  },
-  async nextRequirementOrder(milestoneId: string) {
-    const result = await prisma.milestoneRequirement.aggregate({
-      where: { milestoneId },
-      _max: { sortOrder: true },
-    });
     return (result._max.sortOrder ?? -1) + 1;
   },
   async nextSessionOrder(weekId: string) {

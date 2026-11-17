@@ -448,6 +448,7 @@ export const assignmentService = {
     const scope = await resolveTrainerWorkScope(user, programIdRaw, batchIdRaw);
     const rows = await assignmentSubmissionRepository.findAssignmentsForTrainer(scope.programIds);
     const assignments = [];
+    const recentSubmissions = [];
     for (const assignment of rows) {
       const submissions = await assignmentSubmissionRepository.findForAssignment(assignment.id, scope.batchId);
       const closedByEnrollment = new Set(
@@ -472,8 +473,31 @@ export const assignmentService = {
         allowResubmission: assignment.allowResubmission,
         allowLateSubmission: assignment.allowLateSubmission,
       });
+      for (const submission of submissions) {
+        if (!submission.submittedAt || submission.status === AssignmentSubmissionStatus.IN_PROGRESS) {
+          continue;
+        }
+        recentSubmissions.push({
+          id: submission.id,
+          assignmentId: assignment.id,
+          assignmentTitle: assignment.title,
+          programId: programIdFromAssignment(assignment),
+          programTitle: assignment.day.week.program.title,
+          location: `${assignment.day.week.title} · ${assignment.day.title}`,
+          trainee: submission.enrollment.user,
+          batch: submission.enrollment.batch,
+          status: submission.status,
+          revision: submission.revision,
+          submittedAt: submission.submittedAt,
+          score: submission.score,
+          maxScore: assignment.maxScore,
+          gradedBy: submission.gradedBy,
+          gradedAt: submission.gradedAt,
+        });
+      }
     }
-    return { assignments };
+    recentSubmissions.sort((a, b) => b.submittedAt.getTime() - a.submittedAt.getTime());
+    return { assignments, recentSubmissions: recentSubmissions.slice(0, 12) };
   },
 
   async getForTrainer(user: AuthUser, assignmentId: string, programIdRaw?: unknown, batchIdRaw?: unknown) {

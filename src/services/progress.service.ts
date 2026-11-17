@@ -1,7 +1,6 @@
 import {
   CourseOutcome,
   EnrollmentStatus,
-  MilestoneRequirementKind,
   ProgramStatus,
   QuizKind,
   type AttendanceStatus,
@@ -14,6 +13,7 @@ import { enrollmentService } from "./enrollment.service";
 import { interventionService } from "./intervention.service";
 import { achievementService } from "./achievement.service";
 import { programService } from "./program.service";
+import { sequenceLockReason } from "./batch-family.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
 import { isProgramReviewer } from "../utils/roles";
@@ -100,39 +100,6 @@ export type ProgressActivity = {
   dayTitle: string | null;
 };
 
-export type RequirementStatus = {
-  id: string;
-  kind: MilestoneRequirementKind;
-  label: string;
-  targetCount: number;
-  complete: boolean;
-  blocking: boolean;
-  display: "Complete" | "Missing";
-};
-
-export type MilestoneProgress = {
-  id: string;
-  title: string;
-  afterWeekIndex: number;
-  sortOrder: number;
-  satisfied: boolean;
-  status: ProgressStatus;
-  reason: string | null;
-  requirements: RequirementStatus[];
-  exam: {
-    id: string;
-    title: string;
-    status: ProgressStatus;
-    reason: string | null;
-    available: boolean;
-    canRetry?: boolean;
-    score?: number | null;
-    passingScore?: number;
-    attemptsUsed?: number;
-    maxAttempts?: number | null;
-  } | null;
-};
-
 export type EligibilityRequirement = {
   label: string;
   met: boolean;
@@ -188,7 +155,6 @@ type ProgressSnapshot = {
   } | null;
   nextActivity: ProgressActivity | null;
   currentActivity: ProgressActivity | null;
-  currentMilestone: { id: string; title: string } | null;
   programUpdatedAt: string;
   computedAt: string;
   courseOutcome: CourseOutcomeResult["outcome"];
@@ -264,8 +230,6 @@ export type ProgressComputation = {
     quizzes: PublicLearnQuiz[];
   }>;
   items: TrackedProgressItem[];
-  milestones: MilestoneProgress[];
-  currentMilestone: { id: string; title: string } | null;
   finalExam: FinalExamEligibility;
   quizAccess: Map<string, AccessResult>;
   assignmentAccess: Map<string, AccessResult>;
@@ -342,7 +306,6 @@ function toLearnPathActivity(activity: ProgressActivity | null): LearnPathActivi
     activity.kind === "PRACTICE_QUIZ" ||
     activity.kind === "WEEKLY_QUIZ" ||
     activity.kind === "WEEKLY_EXAM" ||
-    activity.kind === "MILESTONE_EXAM" ||
     activity.kind === "FINAL_EXAM"
   ) {
     return {
@@ -445,65 +408,6 @@ function trackItem(
   });
 }
 
-function evaluateRequirement(
-  requirement: ProgramTree["milestones"][number]["requirements"][number],
-  program: ProgramTree,
-  facts: TraineeFacts,
-  weekCompleteByOrder: Map<number, boolean>,
-  milestone: ProgramTree["milestones"][number],
-): RequirementStatus {
-  const weeksThrough = program.weeks.filter((week) => week.sortOrder <= milestone.afterWeekIndex);
-  const completedWeeks = weeksThrough.filter((week) => weekCompleteByOrder.get(week.sortOrder)).length;
-
-  const quizzesInScope = [
-    ...weeksThrough.flatMap((week) => week.days.flatMap((day) => day.quizzes)),
-    ...weeksThrough.flatMap((week) => week.quizzes),
-  ].filter((quiz) => quiz.kind !== QuizKind.PRACTICE_QUIZ);
-
-  const assignmentsInScope = weeksThrough.flatMap((week) => week.days.flatMap((day) => day.assignments));
-  const passedAssessments = quizzesInScope.filter((quiz) => quizState(facts, quiz.id).passed).length;
-  const completedAssignments = assignmentsInScope.filter((assignment) => assignmentFullyComplete(facts, assignment.id)).length;
-
-  let complete = false;
-  let blocking = true;
-
-  switch (requirement.kind) {
-    case MilestoneRequirementKind.WEEKS_COMPLETED:
-      complete = completedWeeks >= requirement.targetCount;
-      break;
-    case MilestoneRequirementKind.ASSESSMENTS_PASSED:
-      complete = passedAssessments >= requirement.targetCount;
-      break;
-    case MilestoneRequirementKind.ASSIGNMENTS_COMPLETE:
-      complete =
-        requirement.targetCount > 0
-          ? completedAssignments >= requirement.targetCount
-          : assignmentsInScope.every((assignment) => assignmentFullyComplete(facts, assignment.id));
-      break;
-    case MilestoneRequirementKind.ATTENDANCE:
-      complete = facts.attendancePercent !== null && facts.attendancePercent >= requirement.targetCount;
-      blocking = true;
-      break;
-    case MilestoneRequirementKind.CUSTOM:
-      complete = false;
-      blocking = false;
-      break;
-    default:
-      complete = false;
-      blocking = false;
-  }
-
-  return {
-    id: requirement.id,
-    kind: requirement.kind,
-    label: requirement.label,
-    targetCount: requirement.targetCount,
-    complete,
-    blocking,
-    display: complete ? "Complete" : "Missing",
-  };
-}
-
 function computeEngine(program: ProgramTree, enrollmentId: string, facts: TraineeFacts, now: Date): ProgressComputation {
   const quizAccess = new Map<string, AccessResult>();
   const assignmentAccess = new Map<string, AccessResult>();
@@ -519,8 +423,10 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
   let currentDayIndex = program.weeks[0]?.days[0]?.sortOrder ?? 0;
   let foundCurrent = false;
   const weekCompleteByOrder = new Map<number, boolean>();
+  let scheduledDayIndex = 0;
 
   const weeks = program.weeks.map((week: WeekNode) => {
+    const firstDayIndex = scheduledDayIndex;
     const weekAccess = unlockService.weekAccess(
       program.trainingMode,
       program.startDate,
@@ -528,6 +434,7 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
       previousWeekComplete,
       previousWeekTitle,
       now,
+      firstDayIndex,
     );
     let previousDayComplete = weekAccess.status !== "LOCKED";
     let previousDayTitle: string | null = null;
@@ -539,7 +446,11 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
         weekAccess,
         previousDayComplete,
         previousDayTitle,
+        program.startDate,
+        scheduledDayIndex,
+        now,
       );
+      scheduledDayIndex += 1;
       const learnable = itemsForDay(day);
       const learnableReady = requiredLearnableComplete(learnable, facts);
       const practicePassed = practiceQuizzesPassed(day, facts);
@@ -778,74 +689,6 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
     };
   });
 
-  const milestones: MilestoneProgress[] = program.milestones.map((milestone) => {
-    const priorWeeks = program.weeks.filter((week) => week.sortOrder <= milestone.afterWeekIndex);
-    const incompleteWeek = priorWeeks.find((week) => !weekCompleteByOrder.get(week.sortOrder));
-    const weeksComplete = !incompleteWeek;
-    const requirements = milestone.requirements.map((requirement) =>
-      evaluateRequirement(requirement, program, facts, weekCompleteByOrder, milestone),
-    );
-    const blockingUnmet = requirements.find((requirement) => requirement.blocking && !requirement.complete) ?? null;
-    const satisfied = weeksComplete && !blockingUnmet;
-    let examAccess: AccessResult | null = null;
-    if (milestone.exam) {
-      examAccess = unlockService.milestoneExamAccess({
-        weeksComplete,
-        incompleteWeekTitle: incompleteWeek?.title ?? null,
-        blockingUnmet,
-        facts,
-        quizId: milestone.exam.id,
-      });
-      quizAccess.set(milestone.exam.id, examAccess);
-      const state = quizState(facts, milestone.exam.id);
-      const weight = itemWeight("MILESTONE_EXAM");
-      const contentEarned = quizClearsProgressionGate(milestone.exam, facts) ? weight : 0;
-      trackItem(items, totals, {
-        kind: "MILESTONE_EXAM",
-        id: milestone.exam.id,
-        title: milestone.exam.title,
-        access: examAccess,
-        weight,
-        earnedWeight: contentEarned,
-        score: state.bestScore,
-        completedAt: state.lastSubmittedAt?.toISOString() ?? null,
-        weekTitle: milestone.title,
-        dayTitle: null,
-      });
-      considerActivity(
-        examAccess,
-        activityFrom("MILESTONE_EXAM", milestone.exam.id, milestone.exam.title, milestone.title, null),
-        activities,
-        quizCanRetry(milestone.exam.maxAttempts, state),
-      );
-    }
-
-    return {
-      id: milestone.id,
-      title: milestone.title,
-      afterWeekIndex: milestone.afterWeekIndex,
-      sortOrder: milestone.sortOrder,
-      satisfied,
-      status: examAccess?.status ?? (satisfied ? "COMPLETED" : "LOCKED"),
-      reason: examAccess?.reason ?? (satisfied ? null : blockingUnmet?.label ?? incompleteWeek?.title ?? "Requirements not met"),
-      requirements,
-      exam: milestone.exam && examAccess
-        ? {
-            id: milestone.exam.id,
-            title: milestone.exam.title,
-            status: examAccess.status,
-            reason: examAccess.reason,
-            available: examAccess.available,
-            canRetry: quizCanRetry(milestone.exam.maxAttempts, quizState(facts, milestone.exam.id)),
-            score: quizState(facts, milestone.exam.id).bestScore,
-            passingScore: milestone.exam.passingScore,
-            attemptsUsed: quizState(facts, milestone.exam.id).attemptsUsed,
-            maxAttempts: milestone.exam.maxAttempts ?? null,
-          }
-        : null,
-    };
-  });
-
   const eligibilityRequirements: EligibilityRequirement[] = [];
   for (const week of weeks) {
     eligibilityRequirements.push({
@@ -869,27 +712,6 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
       }
     }
   }
-  for (const milestone of milestones) {
-    eligibilityRequirements.push({
-      label: `${milestone.title} requirements`,
-      met: milestone.satisfied,
-    });
-    if (milestone.exam) {
-      eligibilityRequirements.push({
-        label: `${milestone.exam.title} passed`,
-        met: quizState(facts, milestone.exam.id).passed,
-      });
-    }
-    for (const requirement of milestone.requirements) {
-      if (requirement.kind === MilestoneRequirementKind.ATTENDANCE) {
-        eligibilityRequirements.push({
-          label: requirement.label,
-          met: requirement.complete,
-        });
-      }
-    }
-  }
-
   const eligible = eligibilityRequirements.every((requirement) => requirement.met);
   const reasons = eligibilityRequirements.filter((requirement) => !requirement.met).map((requirement) => requirement.label);
   const finalQuiz = program.quizzes.find((quiz) => quiz.kind === QuizKind.FINAL_EXAM) ?? null;
@@ -935,11 +757,6 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
   const currentWeek = weeks.find((week) => week.sortOrder === currentWeekIndex) ?? weeks[0] ?? null;
   const currentDay =
     currentWeek?.days.find((day) => day.sortOrder === currentDayIndex) ?? currentWeek?.days[0] ?? null;
-  const currentMilestone =
-    milestones.find((milestone) => !milestone.satisfied || (milestone.exam && !quizState(facts, milestone.exam.id).passed)) ??
-    milestones[milestones.length - 1] ??
-    null;
-
   return {
     enrollment: {
       id: enrollmentId,
@@ -980,8 +797,6 @@ function computeEngine(program: ProgramTree, enrollmentId: string, facts: Traine
     },
     weeks,
     items,
-    milestones,
-    currentMilestone: currentMilestone ? { id: currentMilestone.id, title: currentMilestone.title } : null,
     finalExam: {
       configured: Boolean(finalQuiz),
       examId: finalQuiz?.id ?? null,
@@ -1016,7 +831,6 @@ function toSnapshot(view: ProgressComputation): ProgressSnapshot {
     nextLearnActivity: view.nextLearnActivity,
     nextActivity: view.nextActivity,
     currentActivity: view.currentActivity,
-    currentMilestone: view.currentMilestone,
     programUpdatedAt: view.program.updatedAt.toISOString(),
     computedAt: new Date().toISOString(),
     courseOutcome: view.course.outcome,
@@ -1037,6 +851,56 @@ function parseSnapshot(value: Prisma.JsonValue | null | undefined): ProgressSnap
     return null;
   }
   return row as ProgressSnapshot;
+}
+
+function applyCourseSequenceLock(view: ProgressComputation, reason: string): ProgressComputation {
+  const locked: AccessResult = { status: "LOCKED", available: false, reason };
+  return {
+    ...view,
+    nextActivity: null,
+    currentActivity: null,
+    nextLearnActivity: null,
+    currentWeek: view.currentWeek ? { ...view.currentWeek, status: "LOCKED" } : null,
+    currentDay: view.currentDay ? { ...view.currentDay, status: "LOCKED" } : null,
+    weeks: view.weeks.map((week) => ({
+      ...week,
+      status: "LOCKED",
+      reason,
+      days: week.days.map((day) => ({
+        ...day,
+        status: "LOCKED",
+        reason,
+        items: day.items.map((item) => ({
+          ...item,
+          status: "LOCKED",
+          reason,
+          description: undefined,
+          url: undefined,
+          file: undefined,
+          attachments: undefined,
+        })),
+        quizzes: day.quizzes.map((quiz) => ({ ...quiz, status: "LOCKED", reason })),
+        assignments: day.assignments.map((assignment) => ({
+          ...assignment,
+          status: "LOCKED",
+          reason,
+          dueDate: null,
+          description: undefined,
+          attachments: undefined,
+        })),
+      })),
+      quizzes: week.quizzes.map((quiz) => ({ ...quiz, status: "LOCKED", reason })),
+    })),
+    items: view.items.map((item) => ({ ...item, access: locked })),
+    finalExam: {
+      ...view.finalExam,
+      eligible: false,
+      status: "LOCKED",
+      reason,
+    },
+    quizAccess: new Map([...view.quizAccess.keys()].map((id) => [id, locked])),
+    assignmentAccess: new Map([...view.assignmentAccess.keys()].map((id) => [id, locked])),
+  };
 }
 
 function toLearnView(view: ProgressComputation) {
@@ -1073,25 +937,6 @@ function toLearnView(view: ProgressComputation) {
       reason: week.reason,
       days: week.days,
       quizzes: week.quizzes,
-    })),
-    milestones: view.milestones.map((milestone) => ({
-      id: milestone.id,
-      title: milestone.title,
-      afterWeekIndex: milestone.afterWeekIndex,
-      exam: milestone.exam
-        ? {
-            id: milestone.exam.id,
-            title: milestone.exam.title,
-            kind: "MILESTONE_EXAM",
-            status: milestone.exam.status,
-            reason: milestone.exam.reason,
-            canRetry: milestone.exam.canRetry,
-            score: milestone.exam.score,
-            passingScore: milestone.exam.passingScore,
-            attemptsUsed: milestone.exam.attemptsUsed,
-            maxAttempts: milestone.exam.maxAttempts,
-          }
-        : null,
     })),
     finalExam:
       view.finalExam.configured && view.finalExam.examId
@@ -1146,8 +991,6 @@ function toProgressView(view: ProgressComputation) {
       gatingComplete: week.gatingComplete,
     })),
     items: view.items,
-    milestones: view.milestones,
-    currentMilestone: view.currentMilestone,
     finalExam: view.finalExam,
   };
 }
@@ -1157,7 +1000,7 @@ function summaryFromSnapshot(
     id: string;
     status: EnrollmentStatus;
     program: ProgressComputation["program"] | { id: string; title: string; description: string; category: string; difficulty: string; durationWeeks: number; trainingMode: string; status: string };
-    batch?: { id: string; name: string } | null;
+    batch?: { id: string; name: string; sortOrder?: number | null; linkedFromBatchId?: string | null } | null;
   },
   snapshot: ProgressSnapshot,
 ) {
@@ -1177,7 +1020,14 @@ function summaryFromSnapshot(
       trainingMode: enrollment.program.trainingMode,
       status: enrollment.program.status,
     },
-    batch: enrollment.batch ? { id: enrollment.batch.id, name: enrollment.batch.name } : null,
+    batch: enrollment.batch
+      ? {
+          id: enrollment.batch.id,
+          name: enrollment.batch.name,
+          sortOrder: enrollment.batch.sortOrder ?? 0,
+          familyId: enrollment.batch.linkedFromBatchId ?? enrollment.batch.id,
+        }
+      : null,
     currentWeek: snapshot.currentWeekTitle
       ? { id: "", title: snapshot.currentWeekTitle, sortOrder: snapshot.currentWeekIndex, status: "AVAILABLE" as const }
       : null,
@@ -1204,6 +1054,20 @@ async function loadProgram(programId: string): Promise<ProgramTree> {
     throw ApiError.notFound("Program not found");
   }
   return program;
+}
+
+function withBatchWindow(
+  program: ProgramTree,
+  batch?: { startDate: Date | null; endDate: Date | null } | null,
+): ProgramTree {
+  if (program.trainingMode !== "SCHEDULED" || !batch?.startDate) {
+    return program;
+  }
+  return {
+    ...program,
+    startDate: batch.startDate,
+    endDate: batch.endDate ?? program.endDate,
+  };
 }
 
 async function persist(enrollmentId: string, view: ProgressComputation) {
@@ -1242,6 +1106,7 @@ export const progressService = {
       status: Parameters<typeof buildFacts>[0]["attempts"][number]["status"];
       score: unknown;
       passed: boolean | null;
+      needsReview?: boolean;
       submittedAt: Date | null;
     }>;
     assignmentSubmissions: Array<{
@@ -1260,6 +1125,7 @@ export const progressService = {
         status: row.status,
         score: toNumber(row.score),
         passed: row.passed,
+        needsReview: row.needsReview,
         submittedAt: row.submittedAt,
       })),
       submissions: enrollment.assignmentSubmissions,
@@ -1276,9 +1142,14 @@ export const progressService = {
 
   async getComputation(user: AuthUser, programId: string, batchId?: string) {
     const { enrollment, program } = await this.requireEnrollment(user.id, programId, batchId);
-    const view = this.compute(program, enrollment.id, this.factsFromEnrollment(enrollment));
+    const view = this.compute(
+      withBatchWindow(program, enrollment.batch),
+      enrollment.id,
+      this.factsFromEnrollment(enrollment),
+    );
     await persist(enrollment.id, view);
-    return view;
+    const lock = await sequenceLockReason(user.id, enrollment.batchId, programId);
+    return lock ? applyCourseSequenceLock(view, lock) : view;
   },
 
   async getLearnView(user: AuthUser, programId: string, batchId?: string) {
@@ -1306,7 +1177,11 @@ export const progressService = {
     }
 
     const program = await loadProgram(enrollment.programId);
-    const view = this.compute(program, enrollment.id, this.factsFromEnrollment(enrollment));
+    const view = this.compute(
+      withBatchWindow(program, enrollment.batch),
+      enrollment.id,
+      this.factsFromEnrollment(enrollment),
+    );
     await persist(enrollment.id, view);
     return toProgressView(view);
   },
@@ -1317,7 +1192,11 @@ export const progressService = {
       return;
     }
     const program = await loadProgram(enrollment.programId);
-    const view = this.compute(program, enrollment.id, this.factsFromEnrollment(enrollment));
+    const view = this.compute(
+      withBatchWindow(program, enrollment.batch),
+      enrollment.id,
+      this.factsFromEnrollment(enrollment),
+    );
     await persist(enrollment.id, view);
     return view;
   },
@@ -1338,18 +1217,28 @@ export const progressService = {
         snapshot.programUpdatedAt === enrollment.program.updatedAt.toISOString() &&
         enrollment.program.trainingMode === "PROGRESSION";
 
+      const lock = await sequenceLockReason(userId, enrollment.batchId, enrollment.programId);
+
       if (canUseSnapshot) {
-        summaries.push(summaryFromSnapshot(enrollment, snapshot));
+        summaries.push({
+          ...summaryFromSnapshot(enrollment, snapshot),
+          sequenceLocked: Boolean(lock),
+          sequenceLockReason: lock,
+        });
         continue;
       }
 
       const withFacts = await enrollmentRepository.findFactsById(enrollment.id);
       const program = await loadProgram(enrollment.programId);
-      const view = this.compute(program, enrollment.id, this.factsFromEnrollment(withFacts ?? {
-        completions: [],
-        assessmentAttempts: [],
-        assignmentSubmissions: [],
-      }));
+      const view = this.compute(
+        withBatchWindow(program, withFacts?.batch ?? enrollment.batch),
+        enrollment.id,
+        this.factsFromEnrollment(withFacts ?? {
+          completions: [],
+          assessmentAttempts: [],
+          assignmentSubmissions: [],
+        }),
+      );
       await persist(enrollment.id, view);
       summaries.push({
         id: enrollment.id,
@@ -1358,7 +1247,17 @@ export const progressService = {
         currentWeekIndex: view.enrollment.currentWeekIndex,
         currentDayIndex: view.enrollment.currentDayIndex,
         program: toLearnView(view).program,
-        batch: enrollment.batch ? { id: enrollment.batch.id, name: enrollment.batch.name } : null,
+        batch: enrollment.batch
+          ? {
+              id: enrollment.batch.id,
+              name: enrollment.batch.name,
+              sortOrder: "sortOrder" in enrollment.batch ? enrollment.batch.sortOrder ?? 0 : 0,
+              familyId:
+                "linkedFromBatchId" in enrollment.batch
+                  ? enrollment.batch.linkedFromBatchId ?? enrollment.batch.id
+                  : enrollment.batch.id,
+            }
+          : null,
         currentWeek: view.currentWeek,
         currentDay: view.currentDay,
         nextActivity: toLearnPathActivity(view.nextActivity),
@@ -1368,6 +1267,8 @@ export const progressService = {
           totalRequired: view.progress.totalRequired,
           percent: view.progress.percent,
         },
+        sequenceLocked: Boolean(lock),
+        sequenceLockReason: lock,
       });
     }
 
@@ -1399,12 +1300,15 @@ export const progressService = {
           },
           currentActivity: snapshot.currentActivity,
           nextActivity: snapshot.nextActivity,
-          currentMilestone: snapshot.currentMilestone,
         });
         continue;
       }
       const program = await loadProgram(summary.program.id);
-      const view = this.compute(program, enrollment.id, this.factsFromEnrollment(enrollment));
+      const view = this.compute(
+        withBatchWindow(program, enrollment.batch),
+        enrollment.id,
+        this.factsFromEnrollment(enrollment),
+      );
       await persist(enrollment.id, view);
       const payload = toProgressView(view);
       detailed.push({
@@ -1416,7 +1320,6 @@ export const progressService = {
         currentWeek: payload.currentWeek,
         currentActivity: payload.currentActivity,
         nextActivity: payload.nextActivity,
-        currentMilestone: payload.currentMilestone,
       });
     }
     return detailed;

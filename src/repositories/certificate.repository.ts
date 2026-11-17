@@ -15,6 +15,17 @@ export const certificateRepository = {
     });
   },
 
+  findByEnrollments(enrollmentIds: string[]) {
+    if (enrollmentIds.length === 0) {
+      return Promise.resolve(null);
+    }
+    return prisma.certificate.findFirst({
+      where: { enrollmentId: { in: enrollmentIds } },
+      include: certificateInclude,
+      orderBy: { issuedAt: "asc" },
+    });
+  },
+
   findByCertificateId(certificateId: string) {
     return prisma.certificate.findUnique({
       where: { certificateId },
@@ -56,6 +67,7 @@ export const certificateRepository = {
     trainerUserId: string;
     completionDate: Date;
     finalScore: number;
+    courseTitles?: string[];
     verificationHash: string;
     documentKey?: string | null;
   }) {
@@ -68,6 +80,7 @@ export const certificateRepository = {
         trainerUserId: data.trainerUserId,
         completionDate: data.completionDate,
         finalScore: data.finalScore,
+        courseTitles: data.courseTitles ?? [],
         verificationHash: data.verificationHash,
         documentKey: data.documentKey ?? null,
       },

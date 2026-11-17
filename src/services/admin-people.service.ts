@@ -1,4 +1,4 @@
-import { EnrollmentStatus, Role } from "../generated/prisma";
+import { Role } from "../generated/prisma";
 import { prisma } from "../config/prisma";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { userRepository } from "../repositories/user.repository";
@@ -6,6 +6,7 @@ import { progressService } from "./progress.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
 import { serializePublicUser, serializePublicUsers } from "../utils/avatar-url";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 import { isProgramReviewer } from "../utils/roles";
 
 function requireReviewer(user: AuthUser) {
@@ -37,7 +38,7 @@ export const adminPeopleService = {
       by: ["userId"],
       where: {
         userId: { in: filtered.map((row) => row.id) },
-        status: { not: EnrollmentStatus.WITHDRAWN },
+        status: ACTIVE_STATUS_FILTER,
       },
       _count: { _all: true },
     });

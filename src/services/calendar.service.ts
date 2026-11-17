@@ -6,8 +6,16 @@ import { enrollmentService } from "./enrollment.service";
 import { programService } from "./program.service";
 import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
+import { ACTIVE_STATUS_FILTER } from "../utils/enrollment-status";
 
-export type CalendarEventType = "SESSION" | "EXAM" | "ASSIGNMENT" | "MILESTONE" | "DEADLINE" | "PROGRAM";
+export type CalendarEventType =
+  | "SESSION"
+  | "EXAM"
+  | "ASSIGNMENT"
+  | "DEADLINE"
+  | "PROGRAM"
+  | "HOLIDAY"
+  | "ACTIVITY";
 
 type CalendarEvent = {
   id: string;
@@ -17,6 +25,11 @@ type CalendarEvent = {
   endsAt: string | null;
   program: { id: string; title: string };
   sourceId: string;
+  description?: string;
+  batchIds?: string[];
+  traineeIds?: string[];
+  batch?: { id: string; name: string } | null;
+  trainee?: { id: string; name: string } | null;
 };
 
 function event(
@@ -46,15 +59,11 @@ function examDate(input: {
   kind: QuizKind;
   weekStart: Date | null;
   weekEnd: Date | null;
-  milestoneWeekEnd: Date | null;
   programEnd: Date | null;
   programStart: Date | null;
 }): Date | null {
   if (input.kind === QuizKind.WEEKLY_EXAM || input.kind === QuizKind.WEEKLY_QUIZ) {
     return input.weekEnd ?? input.weekStart;
-  }
-  if (input.kind === QuizKind.MILESTONE_EXAM) {
-    return input.milestoneWeekEnd ?? input.weekEnd ?? input.weekStart;
   }
   if (input.kind === QuizKind.FINAL_EXAM) {
     return input.programEnd ?? input.programStart;
@@ -94,10 +103,6 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
           },
         },
       },
-      milestones: {
-        orderBy: { sortOrder: "asc" },
-        select: { id: true, title: true, afterWeekIndex: true, exam: { select: { id: true, title: true, kind: true } } },
-      },
       quizzes: { select: { id: true, title: true, kind: true } },
     },
   });
@@ -136,7 +141,6 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
           kind: quiz.kind,
           weekStart: week.startDate,
           weekEnd: week.endDate,
-          milestoneWeekEnd: null,
           programEnd: program.endDate,
           programStart: program.startDate,
         });
@@ -164,7 +168,6 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
             kind: quiz.kind,
             weekStart: week.startDate,
             weekEnd: week.endDate,
-            milestoneWeekEnd: null,
             programEnd: program.endDate,
             programStart: program.startDate,
           });
@@ -176,35 +179,11 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
       }
     }
 
-    for (const milestone of program.milestones) {
-      const week = program.weeks.find((item) => item.sortOrder === milestone.afterWeekIndex) ?? program.weeks[milestone.afterWeekIndex];
-      const at = week?.endDate ?? week?.startDate ?? program.endDate ?? program.startDate;
-      const row = event("MILESTONE", milestone.id, milestone.title, at ?? null, programRef);
-      if (row) {
-        events.push(row);
-      }
-      if (milestone.exam) {
-        const examAt = examDate({
-          kind: milestone.exam.kind,
-          weekStart: week?.startDate ?? null,
-          weekEnd: week?.endDate ?? null,
-          milestoneWeekEnd: week?.endDate ?? null,
-          programEnd: program.endDate,
-          programStart: program.startDate,
-        });
-        const examEvent = event("EXAM", milestone.exam.id, milestone.exam.title, examAt, programRef);
-        if (examEvent) {
-          events.push(examEvent);
-        }
-      }
-    }
-
     for (const quiz of program.quizzes) {
       const at = examDate({
         kind: quiz.kind,
         weekStart: null,
         weekEnd: null,
-        milestoneWeekEnd: null,
         programEnd: program.endDate,
         programStart: program.startDate,
       });
@@ -212,6 +191,28 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
       if (row) {
         events.push(row);
       }
+    }
+  }
+
+  const batches = await prisma.programBatch.findMany({
+    where: { programId: { in: programIds } },
+    select: {
+      id: true,
+      name: true,
+      startDate: true,
+      endDate: true,
+      program: { select: { id: true, title: true } },
+    },
+  });
+  for (const batch of batches) {
+    const programRef = { id: batch.program.id, title: batch.program.title };
+    const started = event("PROGRAM", `${batch.id}:start`, `${batch.name} starts`, batch.startDate, programRef);
+    if (started) {
+      events.push({ ...started, batchIds: [batch.id], batch: { id: batch.id, name: batch.name } });
+    }
+    const ended = event("DEADLINE", `${batch.id}:end`, `Complete ${batch.name}`, batch.endDate, programRef);
+    if (ended) {
+      events.push({ ...ended, batchIds: [batch.id], batch: { id: batch.id, name: batch.name } });
     }
   }
 
@@ -240,6 +241,128 @@ async function eventsForPrograms(programIds: string[], traineeUserId?: string): 
   return events;
 }
 
+async function holidayEvents(): Promise<CalendarEvent[]> {
+  const holidays = await prisma.holiday.findMany({ orderBy: { date: "asc" } });
+  return holidays.map((row) => ({
+    id: `holiday:${row.id}`,
+    type: "HOLIDAY",
+    title: row.name,
+    startsAt: row.date.toISOString(),
+    endsAt: null,
+    program: { id: "", title: "Public holiday" },
+    sourceId: row.id,
+  }));
+}
+
+function withHolidays(events: CalendarEvent[], holidays: CalendarEvent[]): CalendarEvent[] {
+  return [...events, ...holidays].sort((left, right) => left.startsAt.localeCompare(right.startsAt));
+}
+
+async function activityEventsForPrograms(
+  programIds: string[],
+  options: { traineeUserId?: string; batchIds?: string[] } = {},
+): Promise<CalendarEvent[]> {
+  if (programIds.length === 0) {
+    return [];
+  }
+
+  const where: {
+    programId: { in: string[] };
+    batchId?: { in: string[] };
+    OR?: Array<{ traineeUserId: string } | { traineeUserId: null }>;
+  } = { programId: { in: programIds } };
+
+  if (options.batchIds && options.batchIds.length > 0) {
+    where.batchId = { in: options.batchIds };
+  }
+  if (options.traineeUserId) {
+    where.OR = [{ traineeUserId: options.traineeUserId }, { traineeUserId: null }];
+  }
+
+  const rows = await prisma.calendarActivity.findMany({
+    where,
+    include: {
+      program: { select: { id: true, title: true } },
+      batch: { select: { id: true, name: true } },
+      trainee: { select: { id: true, name: true } },
+    },
+    orderBy: { startsAt: "asc" },
+  });
+
+  return rows.map((row) => ({
+    id: `activity:${row.id}`,
+    type: "ACTIVITY" as const,
+    title: row.title,
+    startsAt: row.startsAt.toISOString(),
+    endsAt: row.endsAt?.toISOString() ?? null,
+    program: row.program,
+    sourceId: row.id,
+    description: row.description || undefined,
+    batchIds: [row.batchId],
+    traineeIds: row.traineeUserId ? [row.traineeUserId] : undefined,
+    batch: row.batch,
+    trainee: row.trainee,
+  }));
+}
+
+type TrainerCalendarFilters = {
+  courses: Array<{ id: string; title: string }>;
+  batches: Array<{ id: string; programId: string; name: string }>;
+  trainees: Array<{
+    id: string;
+    name: string;
+    programId: string;
+    batchId: string;
+    batchName: string;
+  }>;
+};
+
+const EMPTY_FILTERS: TrainerCalendarFilters = { courses: [], batches: [], trainees: [] };
+
+async function filtersForPrograms(programIds: string[]): Promise<TrainerCalendarFilters> {
+  if (programIds.length === 0) {
+    return EMPTY_FILTERS;
+  }
+
+  const [courses, batches, enrollments] = await Promise.all([
+    prisma.program.findMany({
+      where: { id: { in: programIds } },
+      select: { id: true, title: true },
+      orderBy: { title: "asc" },
+    }),
+    prisma.programBatch.findMany({
+      where: { programId: { in: programIds } },
+      select: { id: true, programId: true, name: true },
+      orderBy: { name: "asc" },
+    }),
+    prisma.enrollment.findMany({
+      where: {
+        programId: { in: programIds },
+        status: ACTIVE_STATUS_FILTER,
+      },
+      select: {
+        programId: true,
+        batchId: true,
+        user: { select: { id: true, name: true } },
+        batch: { select: { id: true, name: true } },
+      },
+      orderBy: { user: { name: "asc" } },
+    }),
+  ]);
+
+  const trainees = enrollments
+    .filter((row) => Boolean(row.batch))
+    .map((row) => ({
+      id: row.user.id,
+      name: row.user.name,
+      programId: row.programId,
+      batchId: row.batchId,
+      batchName: row.batch!.name,
+    }));
+
+  return { courses, batches, trainees };
+}
+
 export const calendarService = {
   async listForUser(user: AuthUser) {
     if (user.role === "TRAINEE") {
@@ -248,12 +371,29 @@ export const calendarService = {
       const programIds = enrollments
         .filter((row) => row.program.status === "APPROVED" || row.program.status === "PUBLISHED")
         .map((row) => row.programId);
-      return { events: await eventsForPrograms(programIds, user.id) };
+      const enrollmentsForScope = enrollments.filter(
+        (row) => row.program.status === "APPROVED" || row.program.status === "PUBLISHED",
+      );
+      const [events, holidays, activities] = await Promise.all([
+        eventsForPrograms(programIds, user.id),
+        holidayEvents(),
+        activityEventsForPrograms(programIds, {
+          traineeUserId: user.id,
+          batchIds: enrollmentsForScope.map((row) => row.batchId).filter(Boolean),
+        }),
+      ]);
+      return { events: withHolidays([...events, ...activities], holidays) };
     }
 
     if (user.role === "SUPER_ADMIN" || user.role === "ADMIN") {
       const programs = await programRepository.findCatalog();
-      return { events: await eventsForPrograms(programs.map((row) => row.id)) };
+      const programIds = programs.map((row) => row.id);
+      const [events, holidays, activities] = await Promise.all([
+        eventsForPrograms(programIds),
+        holidayEvents(),
+        activityEventsForPrograms(programIds),
+      ]);
+      return { events: withHolidays([...events, ...activities], holidays) };
     }
 
     if (user.role !== "TRAINER") {
@@ -261,6 +401,12 @@ export const calendarService = {
     }
 
     const programIds = await programService.listProgramIdsForTrainer(user.id);
-    return { events: await eventsForPrograms(programIds) };
+    const [events, holidays, filters, activities] = await Promise.all([
+      eventsForPrograms(programIds),
+      holidayEvents(),
+      filtersForPrograms(programIds),
+      activityEventsForPrograms(programIds),
+    ]);
+    return { events: withHolidays([...events, ...activities], holidays), filters };
   },
 };

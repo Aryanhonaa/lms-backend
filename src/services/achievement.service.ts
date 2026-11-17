@@ -13,14 +13,13 @@ import type { AuthUser } from "../types";
 import { ApiError } from "../utils/api-error";
 
 const QUIZ_KINDS: QuizKind[] = [QuizKind.PRACTICE_QUIZ, QuizKind.WEEKLY_QUIZ];
-const EXAM_KINDS: QuizKind[] = [QuizKind.WEEKLY_EXAM, QuizKind.MILESTONE_EXAM, QuizKind.FINAL_EXAM];
+const EXAM_KINDS: QuizKind[] = [QuizKind.WEEKLY_EXAM, QuizKind.FINAL_EXAM];
 
 function collectQuizzes(program: ProgramTree) {
   const rows = [
     ...program.quizzes,
     ...program.weeks.flatMap((week) => week.quizzes),
     ...program.weeks.flatMap((week) => week.days.flatMap((day) => day.quizzes)),
-    ...program.milestones.flatMap((milestone) => (milestone.exam ? [milestone.exam] : [])),
   ];
   const seen = new Set<string>();
   return rows.filter((quiz) => {
@@ -61,10 +60,6 @@ export const achievementService = {
     const quizItems = quizzes.filter((quiz) => QUIZ_KINDS.includes(quiz.kind));
     if (quizItems.some((quiz) => (quizState(facts, quiz.id).bestScore ?? 0) >= 100)) {
       await achievementRepository.grant(userId, AchievementKey.PERFECT_QUIZ, enrollment.id);
-    }
-
-    if (program.milestones.length > 0 && view.milestones.every((milestone) => milestone.satisfied)) {
-      await achievementRepository.grant(userId, AchievementKey.MILESTONE_MASTER, enrollment.id);
     }
 
     const attendancePercent = attendancePercentage(enrollment.attendances.map((row) => row.status));

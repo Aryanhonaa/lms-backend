@@ -94,11 +94,11 @@ export const programService = {
           trainingMode: input.trainingMode,
           startDate: parseDate(input.startDate),
           endDate: parseDate(input.endDate),
-      learningObjectives: input.learningObjectives ?? [],
-      prerequisites: input.prerequisites ?? [],
-      progressThreshold: input.progressThreshold ?? 60,
-      examScoreThreshold: input.examScoreThreshold ?? 60,
-      createdByUserId: user.id,
+          learningObjectives: input.learningObjectives ?? [],
+          prerequisites: input.prerequisites ?? [],
+          progressThreshold: input.progressThreshold ?? 60,
+          examScoreThreshold: input.examScoreThreshold ?? 60,
+          createdByUserId: user.id,
         },
       });
 
@@ -107,6 +107,14 @@ export const programService = {
           programId: program.id,
           userId: user.id,
           role: "OWNER",
+        },
+      });
+
+      await tx.week.create({
+        data: {
+          programId: program.id,
+          sortOrder: 0,
+          title: "Plan",
         },
       });
 
@@ -411,7 +419,15 @@ export const programService = {
     const membership = await prisma.programTrainer.findUnique({
       where: { programId_userId: { programId, userId: user.id } },
     });
-    if (!membership) {
+    if (membership) {
+      return program;
+    }
+
+    const onBatch = await prisma.batchTrainer.findFirst({
+      where: { userId: user.id, batch: { programId } },
+      select: { id: true },
+    });
+    if (!onBatch) {
       throw ApiError.forbidden();
     }
 
@@ -419,14 +435,28 @@ export const programService = {
   },
 
   async listProgramIdsForTrainer(userId: string) {
-    const rows = await prisma.programTrainer.findMany({
-      where: {
-        userId,
-        OR: [{ program: { createdByUserId: userId } }, { program: { status: { not: ProgramStatus.DRAFT } } }],
-      },
-      select: { programId: true },
-    });
-    return rows.map((row) => row.programId);
+    const [rows, batchRows] = await Promise.all([
+      prisma.programTrainer.findMany({
+        where: {
+          userId,
+          OR: [{ program: { createdByUserId: userId } }, { program: { status: { not: ProgramStatus.DRAFT } } }],
+        },
+        select: { programId: true },
+      }),
+      prisma.batchTrainer.findMany({
+        where: {
+          userId,
+          batch: { program: { status: { not: ProgramStatus.DRAFT } } },
+        },
+        select: { batch: { select: { programId: true } } },
+      }),
+    ]);
+    return [
+      ...new Set([
+        ...rows.map((row) => row.programId),
+        ...batchRows.map((row) => row.batch.programId),
+      ]),
+    ];
   },
 
   async requireOwned(user: AuthUser, programId: string) {

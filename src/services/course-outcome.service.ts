@@ -13,7 +13,6 @@ const REQUIRED_PASS_KINDS = new Set<QuizKind>([
   QuizKind.PRACTICE_QUIZ,
   QuizKind.WEEKLY_QUIZ,
   QuizKind.WEEKLY_EXAM,
-  QuizKind.MILESTONE_EXAM,
   QuizKind.FINAL_EXAM,
 ]);
 
@@ -40,7 +39,6 @@ function collectQuizzes(program: ProgramTree) {
     ...program.quizzes,
     ...program.weeks.flatMap((week) => week.quizzes),
     ...program.weeks.flatMap((week) => week.days.flatMap((day) => day.quizzes)),
-    ...program.milestones.flatMap((milestone) => (milestone.exam ? [milestone.exam] : [])),
   ];
   const seen = new Set<string>();
   return rows.filter((quiz) => {

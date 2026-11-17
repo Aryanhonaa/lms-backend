@@ -64,20 +64,6 @@ export const programTreeInclude = {
       trainingSessions: { orderBy: { sortOrder: "asc" as const } },
     },
   },
-  milestones: {
-    orderBy: { sortOrder: "asc" as const },
-    include: {
-      requirements: { orderBy: { sortOrder: "asc" as const } },
-      exam: {
-        include: {
-          questions: {
-            orderBy: { sortOrder: "asc" as const },
-            include: { options: { orderBy: { sortOrder: "asc" as const } } },
-          },
-        },
-      },
-    },
-  },
   quizzes: {
     include: {
       questions: {

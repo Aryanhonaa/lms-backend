@@ -24,7 +24,6 @@ export type TrackedKind =
   | "PRACTICE_QUIZ"
   | "WEEKLY_QUIZ"
   | "WEEKLY_EXAM"
-  | "MILESTONE_EXAM"
   | "FINAL_EXAM";
 
 export type AccessResult = {
@@ -189,17 +188,34 @@ export function formatOpenDate(date: Date): string {
   });
 }
 
-export function addWeeks(date: Date, weeks: number): Date {
-  const next = new Date(date);
-  next.setUTCDate(next.getUTCDate() + weeks * 7);
+export function startOfUtcDay(date: Date): Date {
+  return new Date(Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()));
+}
+
+export function addDays(date: Date, days: number): Date {
+  const next = startOfUtcDay(date);
+  next.setUTCDate(next.getUTCDate() + days);
   return next;
 }
 
-export function weekOpensAt(trainingMode: TrainingMode, programStartDate: Date | null, week: WeekNode): Date | null {
+/** Calendar day the Nth course day opens in SCHEDULED mode (batch start + N days). */
+export function scheduledOpensAt(programStartDate: Date | null, dayIndex: number): Date | null {
+  if (!programStartDate) {
+    return null;
+  }
+  return addDays(programStartDate, dayIndex);
+}
+
+export function weekOpensAt(
+  trainingMode: TrainingMode,
+  programStartDate: Date | null,
+  week: WeekNode,
+  firstDayIndex = 0,
+): Date | null {
   if (trainingMode !== "SCHEDULED") {
     return week.startDate;
   }
-  return week.startDate ?? (programStartDate ? addWeeks(programStartDate, week.sortOrder) : null);
+  return scheduledOpensAt(programStartDate, firstDayIndex);
 }
 
 export function buildFacts(input: {
@@ -414,7 +430,7 @@ export function quizClearsProgressionGate(
 }
 
 /**
- * Unlocks the next step only; progress, milestones and course outcome still use quizClearsProgressionGate.
+ * Unlocks the next step only; progress and course outcome still use quizClearsProgressionGate.
  * Quizzes with written answers stop blocking once submitted, so trainees never wait on manual grading.
  */
 export function quizUnblocksNextStep(
@@ -483,8 +499,6 @@ export function itemWeight(kind: TrackedKind, required = true): number {
       return 2;
     case "WEEKLY_EXAM":
       return 3;
-    case "MILESTONE_EXAM":
-      return 4;
     case "FINAL_EXAM":
       return 5;
     default:
@@ -540,9 +554,10 @@ export const unlockService = {
     previousWeekComplete: boolean,
     previousWeekTitle: string | null,
     now: Date,
+    firstDayIndex = 0,
   ): AccessResult {
     if (trainingMode === "SCHEDULED") {
-      const opensAt = weekOpensAt(trainingMode, programStartDate, week);
+      const opensAt = weekOpensAt(trainingMode, programStartDate, week, firstDayIndex);
       if (opensAt && now < opensAt) {
         return withStatus("LOCKED", `This week opens on ${formatOpenDate(opensAt)}.`);
       }
@@ -561,12 +576,23 @@ export const unlockService = {
     weekAccess: AccessResult,
     previousDayComplete: boolean,
     previousDayTitle: string | null,
+    programStartDate: Date | null = null,
+    dayIndex = 0,
+    now: Date = new Date(),
   ): AccessResult {
     if (weekAccess.status === "LOCKED") {
       return weekAccess;
     }
 
-    if (trainingMode === "PROGRESSION" && !previousDayComplete && previousDayTitle) {
+    if (trainingMode === "SCHEDULED") {
+      const opensAt = scheduledOpensAt(programStartDate, dayIndex);
+      if (opensAt && now < opensAt) {
+        return withStatus("LOCKED", `This day opens on ${formatOpenDate(opensAt)}.`);
+      }
+      return withStatus("AVAILABLE");
+    }
+
+    if (!previousDayComplete && previousDayTitle) {
       return withStatus("LOCKED", `Complete ${previousDayTitle} before accessing this content.`);
     }
 
@@ -661,25 +687,6 @@ export const unlockService = {
       return withStatus("LOCKED", "Complete this week's lessons and practice quizzes first.");
     }
     return applyAttemptStatus(withStatus("AVAILABLE"), quizState(facts, quizId));
-  },
-
-  milestoneExamAccess(input: {
-    weeksComplete: boolean;
-    incompleteWeekTitle: string | null;
-    blockingUnmet: { label: string } | null;
-    facts: TraineeFacts;
-    quizId: string;
-  }): AccessResult {
-    if (!input.weeksComplete && input.incompleteWeekTitle) {
-      return withStatus("LOCKED", `Complete ${input.incompleteWeekTitle} before this milestone exam.`);
-    }
-    if (!input.weeksComplete) {
-      return withStatus("LOCKED", "Complete the required weeks before this milestone exam.");
-    }
-    if (input.blockingUnmet) {
-      return withStatus("LOCKED", `Missing requirement: ${input.blockingUnmet.label}.`);
-    }
-    return applyAttemptStatus(withStatus("AVAILABLE"), quizState(input.facts, input.quizId));
   },
 
   finalExamAccess(eligible: boolean, reasons: string[], facts: TraineeFacts, quizId: string): AccessResult {

@@ -56,6 +56,8 @@ export const batchSchema = z.object({
   batchNumber: z.number().int().min(1).max(999).optional().nullable(),
   salesTrainerId: z.string().uuid().optional().nullable(),
   supportTrainerId: z.string().uuid().optional().nullable(),
+  collaboratorIds: z.array(z.string().uuid()).max(20).optional(),
+  programIds: z.array(z.string().uuid()).max(20).optional(),
   actualCompletionDate: optionalDate,
 });
 
@@ -186,6 +188,7 @@ const questionSchema = z
     prompt: z.string().trim().min(1),
     points: z.number().int().positive().max(100).optional(),
     modelAnswer: z.string().max(5000).optional(),
+    keepOptionOrder: z.boolean().optional(),
     options: z
       .array(
         z.object({
@@ -227,6 +230,7 @@ export const quizSchema = z
     timeLimitMin: z.number().int().positive().optional().nullable(),
     maxAttempts: z.number().int().positive().optional().nullable(),
     randomized: z.boolean().optional(),
+    shuffleOptions: z.boolean().optional(),
     questionDrawCount: z.number().int().positive().max(200).optional().nullable(),
     revealMode: z.enum(["HIDDEN", "IMMEDIATE", "SCHEDULED"]).optional(),
     revealAt: z
@@ -268,17 +272,6 @@ export const quizSchema = z
       });
     }
   });
-
-export const milestoneSchema = z.object({
-  title: z.string().trim().min(1),
-  afterWeekIndex: z.number().int().nonnegative(),
-});
-
-export const requirementSchema = z.object({
-  label: z.string().trim().min(1),
-  kind: z.enum(["WEEKS_COMPLETED", "ASSESSMENTS_PASSED", "ASSIGNMENTS_COMPLETE", "ATTENDANCE", "CUSTOM"]).optional(),
-  targetCount: z.number().int().positive().optional(),
-});
 
 const sessionFields = z.object({
   title: z.string().trim().min(1),

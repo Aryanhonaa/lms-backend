@@ -21,13 +21,20 @@ import {
 import { certificateController } from "../controllers/certificate.controller";
 import { appUsageController } from "../controllers/app-usage.controller";
 import { batchController } from "../controllers/batch.controller";
+import {
+  batchTrackerController,
+  teamController,
+  workCalendarController,
+} from "../controllers/batch-tracker.controller";
 import { enrollmentController } from "../controllers/enrollment.controller";
 import { requireAuth } from "../middleware/require-auth";
 import { requireRole } from "../middleware/require-role";
 import { validateBody } from "../middleware/validate-body";
 import { asyncHandler } from "../utils/async-handler";
 import {
+  answerVisibilitySchema,
   assignmentSubmissionSchema,
+  gradeAttemptSchema,
   reviewSubmissionSchema,
   submitAttemptSchema,
 } from "../validators/assessment.validators";
@@ -43,10 +50,48 @@ import {
   submitFeedbackSchema,
 } from "../validators/engagement.validators";
 import { createUserSchema, updateUserSchema } from "../validators/user.validators";
-import { addProgramTrainerSchema, assignProgramTrainersSchema } from "../validators/program.validators";
+import { addProgramTrainerSchema, assignProgramTrainersSchema, batchSchema } from "../validators/program.validators";
+import {
+  exitEnrollmentSchema,
+  handoverSchema,
+  holidaysSchema,
+  joinedDateSchema,
+  removeEnrollmentSchema,
+  teamSchema,
+  updateTeamSchema,
+  weeklyOffDaysSchema,
+} from "../validators/batch-tracker.validators";
 import { revokeCertificateSchema } from "../validators/certificate.validators";
 import { usageHeartbeatSchema } from "../validators/app-usage.validators";
+import { createCalendarActivitySchema } from "../validators/calendar.validators";
 import { trainerProgramRouter } from "./program.routes";
+
+function mountBatchTrackerRoutes(router: Router) {
+  router.get("/batch-catalog", asyncHandler(batchController.catalog));
+  router.get("/batch-tracker", asyncHandler(batchTrackerController.overview));
+  router.get("/batch-tracker/:batchId", asyncHandler(batchTrackerController.detail));
+  router.get("/batch-codes/preview", asyncHandler(batchController.previewCode));
+  router.post("/batches/:batchId/handover", validateBody(handoverSchema), asyncHandler(batchTrackerController.handover));
+  router.post(
+    "/enrollments/:enrollmentId/exit",
+    validateBody(exitEnrollmentSchema),
+    asyncHandler(batchTrackerController.exit),
+  );
+  router.post(
+    "/enrollments/:enrollmentId/remove",
+    validateBody(removeEnrollmentSchema),
+    asyncHandler(batchTrackerController.remove),
+  );
+  router.post("/enrollments/:enrollmentId/reinstate", asyncHandler(batchTrackerController.reinstate));
+  router.patch(
+    "/enrollments/:enrollmentId/joined-date",
+    validateBody(joinedDateSchema),
+    asyncHandler(batchTrackerController.setJoinedDate),
+  );
+  router.delete("/enrollments/:enrollmentId/handover", asyncHandler(batchTrackerController.undoHandover));
+  router.get("/teams", asyncHandler(teamController.list));
+  router.get("/work-calendar", asyncHandler(workCalendarController.get));
+}
 
 export const adminRouter = Router();
 adminRouter.use(requireAuth, requireRole("SUPER_ADMIN", "ADMIN"));
@@ -129,6 +174,17 @@ adminRouter.patch(
   asyncHandler(certificateController.revoke),
 );
 adminRouter.get("/analytics/app-usage", asyncHandler(appUsageController.analytics));
+mountBatchTrackerRoutes(adminRouter);
+adminRouter.patch("/batches/:batchId", validateBody(batchSchema.partial()), asyncHandler(batchController.update));
+adminRouter.post("/teams", validateBody(teamSchema), asyncHandler(teamController.create));
+adminRouter.patch("/teams/:teamId", validateBody(updateTeamSchema), asyncHandler(teamController.update));
+adminRouter.put(
+  "/work-calendar/weekly-off-days",
+  validateBody(weeklyOffDaysSchema),
+  asyncHandler(workCalendarController.setWeeklyOffDays),
+);
+adminRouter.post("/holidays", validateBody(holidaysSchema), asyncHandler(workCalendarController.addHolidays));
+adminRouter.delete("/holidays/:holidayId", asyncHandler(workCalendarController.removeHoliday));
 
 const videoUpload = multer({
   storage: multer.memoryStorage(),
@@ -145,8 +201,20 @@ trainerRouter.get("/dashboard", asyncHandler(trainerController.getDashboard));
 trainerRouter.get("/search", asyncHandler(trainerController.search));
 trainerRouter.get("/analytics/app-usage", asyncHandler(appUsageController.analytics));
 trainerRouter.post("/uploads/video", videoUpload.single("file"), asyncHandler(uploadController.video));
+trainerRouter.get("/grading-queue", asyncHandler(assessmentController.gradingQueue));
+trainerRouter.get("/grading-queue/count", asyncHandler(assessmentController.gradingCount));
 trainerRouter.get("/assessments", asyncHandler(assessmentController.listForTrainer));
 trainerRouter.get("/assessments/:id", asyncHandler(assessmentController.getForTrainer));
+trainerRouter.post(
+  "/assessments/:id/answer-visibility",
+  validateBody(answerVisibilitySchema),
+  asyncHandler(assessmentController.setAnswerVisibility),
+);
+trainerRouter.post(
+  "/attempts/:id/grade",
+  validateBody(gradeAttemptSchema),
+  asyncHandler(assessmentController.gradeAttempt),
+);
 trainerRouter.get("/assignments", asyncHandler(assignmentController.listForTrainer));
 trainerRouter.get("/assignments/:id", asyncHandler(assignmentController.getForTrainer));
 trainerRouter.get(
@@ -184,9 +252,20 @@ trainerRouter.patch(
   asyncHandler(interventionController.updateSettings),
 );
 trainerRouter.get("/calendar", asyncHandler(calendarController.list));
+trainerRouter.post(
+  "/calendar/activities",
+  validateBody(createCalendarActivitySchema),
+  asyncHandler(calendarController.createActivity),
+);
+trainerRouter.delete("/calendar/activities/:activityId", asyncHandler(calendarController.removeActivity));
 trainerRouter.get("/leaderboard", asyncHandler(leaderboardController.trainer));
 trainerRouter.get("/feedback", asyncHandler(feedbackController.listTrainer));
 trainerRouter.get("/feedback/:id", asyncHandler(feedbackController.get));
+trainerRouter.patch(
+  "/feedback/:id",
+  validateBody(moderateFeedbackSchema),
+  asyncHandler(feedbackController.moderate),
+);
 trainerRouter.get("/announcements", asyncHandler(announcementController.list));
 trainerRouter.get("/notifications", asyncHandler(announcementController.inbox));
 trainerRouter.post("/notifications/read", asyncHandler(announcementController.markRead));
@@ -207,6 +286,7 @@ trainerRouter.patch(
   validateBody(updateAttendanceSchema),
   asyncHandler(attendanceController.update),
 );
+mountBatchTrackerRoutes(trainerRouter);
 trainerRouter.use(trainerProgramRouter);
 
 export const traineeRouter = Router();

@@ -1,11 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
-import { CertificateStatus, EnrollmentStatus } from "../generated/prisma";
+import { CertificateStatus } from "../generated/prisma";
 import { env } from "../config/env";
+import { prisma } from "../config/prisma";
 import { certificateRenderer, type CertificateDocument } from "../certificates/certificate-renderer";
 import { certificateRepository } from "../repositories/certificate.repository";
 import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { enrollmentService } from "./enrollment.service";
 import { programService } from "./program.service";
+import { isExitedEnrollment } from "../utils/enrollment-status";
 import {
   academicRequirementsMet,
   certificateEligibilityService,
@@ -58,6 +60,25 @@ function pendingReviewFrom(
   };
 }
 
+export function joinCourseTitles(titles: string[]): string {
+  const unique = titles.map((title) => title.trim()).filter(Boolean).filter((title, index, list) => list.indexOf(title) === index);
+  if (unique.length <= 1) {
+    return unique[0] ?? "";
+  }
+  if (unique.length === 2) {
+    return `${unique[0]} and ${unique[1]}`;
+  }
+  return `${unique.slice(0, -1).join(", ")}, and ${unique[unique.length - 1]}`;
+}
+
+function titlesFor(row: { courseTitles?: string[]; program: { title: string } }) {
+  return row.courseTitles && row.courseTitles.length > 0 ? row.courseTitles : [row.program.title];
+}
+
+function roundScore(value: number): number {
+  return Math.round(value * 100) / 100;
+}
+
 function toPublic(row: {
   certificateId: string;
   trainee: { name: string };
@@ -65,11 +86,12 @@ function toPublic(row: {
   trainer: { name: string };
   completionDate: Date;
   status: CertificateStatus;
+  courseTitles?: string[];
 }) {
   return {
     certificateId: row.certificateId,
     traineeName: row.trainee.name,
-    program: row.program.title,
+    program: joinCourseTitles(titlesFor(row)),
     trainer: row.trainer.name,
     completionDate: row.completionDate.toISOString(),
     status: row.status,
@@ -79,9 +101,11 @@ function toPublic(row: {
 function toOwned(
   row: NonNullable<Awaited<ReturnType<typeof certificateRepository.findByCertificateId>>>,
 ) {
+  const courseTitles = titlesFor(row);
   return {
     certificateId: row.certificateId,
-    program: { id: row.program.id, title: row.program.title },
+    program: { id: row.program.id, title: joinCourseTitles(courseTitles) },
+    courseTitles,
     trainerName: row.trainer.name,
     traineeName: row.trainee.name,
     completionDate: row.completionDate.toISOString(),
@@ -98,12 +122,64 @@ function toDocument(
   return {
     certificateId: row.certificateId,
     traineeName: row.trainee.name,
-    programTitle: row.program.title,
+    programTitle: joinCourseTitles(titlesFor(row)),
     trainerName: row.trainer.name,
     completionDate: row.completionDate.toISOString(),
     issuedAt: row.issuedAt.toISOString(),
     finalScore,
     status: row.status,
+  };
+}
+
+type AssignmentFamily = {
+  assignedEnrollmentIds: string[];
+  primaryEnrollmentId: string | null;
+  courseTitles: string[];
+  missingAssigned: boolean;
+};
+
+async function loadAssignmentFamily(enrollmentId: string): Promise<AssignmentFamily> {
+  const enrollment = await prisma.enrollment.findUnique({
+    where: { id: enrollmentId },
+    select: {
+      id: true,
+      userId: true,
+      batch: { select: { id: true, linkedFromBatchId: true } },
+    },
+  });
+  if (!enrollment) {
+    throw ApiError.notFound("Enrollment not found");
+  }
+
+  const primaryBatchId = enrollment.batch.linkedFromBatchId ?? enrollment.batch.id;
+  const primaryBatch = await prisma.programBatch.findUniqueOrThrow({
+    where: { id: primaryBatchId },
+    select: {
+      id: true,
+      program: { select: { title: true } },
+      linkedBatches: {
+        select: { id: true, program: { select: { title: true } } },
+        orderBy: { createdAt: "asc" },
+      },
+    },
+  });
+
+  const familyBatchIds = [primaryBatch.id, ...primaryBatch.linkedBatches.map((row) => row.id)];
+  const enrollments = await prisma.enrollment.findMany({
+    where: { userId: enrollment.userId, batchId: { in: familyBatchIds } },
+    select: { id: true, batchId: true, status: true },
+  });
+  const byBatch = new Map(enrollments.map((row) => [row.batchId, row]));
+  const assigned = familyBatchIds
+    .map((batchId) => byBatch.get(batchId))
+    .filter((row): row is NonNullable<typeof row> => row != null && !isExitedEnrollment(row.status));
+  const primary = assigned.find((row) => row.batchId === primaryBatch.id) ?? assigned[0] ?? null;
+
+  return {
+    assignedEnrollmentIds: assigned.map((row) => row.id),
+    primaryEnrollmentId: primary?.id ?? null,
+    courseTitles: [primaryBatch.program.title, ...primaryBatch.linkedBatches.map((row) => row.program.title)],
+    missingAssigned: familyBatchIds.some((batchId) => !byBatch.has(batchId)),
   };
 }
 
@@ -130,16 +206,27 @@ async function renderDocument(
 
 export const certificateService = {
   async issueIfEligible(enrollmentId: string) {
-    const existing = await certificateRepository.findByEnrollment(enrollmentId);
+    const family = await loadAssignmentFamily(enrollmentId);
+    const existing = await certificateRepository.findByEnrollments(family.assignedEnrollmentIds);
     if (existing) {
       return existing;
     }
-
-    const eligibility = await certificateEligibilityService.evaluate(enrollmentId);
-    if (!eligibility.eligible) {
+    if (family.missingAssigned || !family.primaryEnrollmentId) {
       return null;
     }
 
+    const evaluations = await Promise.all(
+      family.assignedEnrollmentIds.map((id) => certificateEligibilityService.evaluate(id)),
+    );
+    if (evaluations.some((row) => !row.eligible)) {
+      return null;
+    }
+
+    const primaryEligibility =
+      evaluations.find((row) => row.enrollmentId === family.primaryEnrollmentId) ?? evaluations[0];
+    const finalScore = roundScore(
+      evaluations.reduce((sum, row) => sum + row.finalScore, 0) / evaluations.length,
+    );
     const issuedAt = new Date();
     let created = null;
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -147,12 +234,13 @@ export const certificateService = {
       try {
         created = await certificateRepository.create({
           certificateId,
-          enrollmentId,
-          traineeUserId: eligibility.trainee.id,
-          programId: eligibility.program.id,
-          trainerUserId: eligibility.trainer.id,
+          enrollmentId: family.primaryEnrollmentId,
+          traineeUserId: primaryEligibility.trainee.id,
+          programId: primaryEligibility.program.id,
+          trainerUserId: primaryEligibility.trainer.id,
           completionDate: issuedAt,
-          finalScore: eligibility.finalScore,
+          finalScore,
+          courseTitles: family.courseTitles,
           verificationHash: verificationHash(certificateId),
         });
         break;
@@ -161,16 +249,16 @@ export const certificateService = {
         if (code !== "P2002") {
           throw error;
         }
-        const raced = await certificateRepository.findByEnrollment(enrollmentId);
+        const raced = await certificateRepository.findByEnrollments(family.assignedEnrollmentIds);
         if (raced) {
           return raced;
         }
       }
     }
     if (!created) {
-      return certificateRepository.findByEnrollment(enrollmentId);
+      return certificateRepository.findByEnrollments(family.assignedEnrollmentIds);
     }
-    return renderDocument(created, eligibility.finalScore);
+    return renderDocument(created, finalScore);
   },
 
   async listForTrainee(user: AuthUser) {
@@ -181,7 +269,7 @@ export const certificateService = {
     const enrollments = await enrollmentRepository.findByUser(user.id);
     const pendingReviews: PendingCourseReview[] = [];
     for (const enrollment of enrollments) {
-      if (enrollment.status === EnrollmentStatus.WITHDRAWN) {
+      if (isExitedEnrollment(enrollment.status)) {
         continue;
       }
       const issued = await this.issueIfEligible(enrollment.id);
@@ -195,7 +283,19 @@ export const certificateService = {
       }
     }
     const rows = await certificateRepository.listForTrainee(user.id);
-    return { certificates: rows.map(toOwned), pendingReviews };
+    const { familyFullyPassed } = await import("./batch-family.service");
+    const certificates = [];
+    for (const row of rows) {
+      const enrollment = await prisma.enrollment.findUnique({
+        where: { id: row.enrollmentId },
+        select: { batchId: true },
+      });
+      if (!enrollment || !(await familyFullyPassed(user.id, enrollment.batchId))) {
+        continue;
+      }
+      certificates.push(toOwned(row));
+    }
+    return { certificates, pendingReviews };
   },
 
   async getForTrainee(user: AuthUser, certificateId: string) {
@@ -219,10 +319,17 @@ export const certificateService = {
       batchId,
     );
     await this.issueIfEligible(enrollment.id);
+    const family = await loadAssignmentFamily(enrollment.id);
     const eligibility = await certificateEligibilityService.evaluate(enrollment.id);
-    const row = await certificateRepository.findByEnrollment(enrollment.id);
+    const row = await certificateRepository.findByEnrollments(family.assignedEnrollmentIds);
+    const familyEligible =
+      !family.missingAssigned &&
+      Boolean(family.primaryEnrollmentId) &&
+      (
+        await Promise.all(family.assignedEnrollmentIds.map((id) => certificateEligibilityService.evaluate(id)))
+      ).every((item) => item.eligible);
     return {
-      eligible: eligibility.eligible,
+      eligible: familyEligible,
       requirements: eligibility.requirements,
       pendingReview: Boolean(pendingReviewFrom(eligibility, enrollment)),
       certificate: row ? toOwned(row) : null,

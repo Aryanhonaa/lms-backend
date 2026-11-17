@@ -14,11 +14,6 @@ const catalog: Array<{ key: AchievementKey; title: string; description: string }
     description: "Score 100 on a closed practice or weekly quiz.",
   },
   {
-    key: AchievementKey.MILESTONE_MASTER,
-    title: "Milestone Master",
-    description: "Satisfy every milestone on a program you are enrolled in.",
-  },
-  {
     key: AchievementKey.TOP_PERFORMER,
     title: "Top Performer",
     description: "Rank first on a program leaderboard with at least two trainees.",
@@ -36,7 +31,7 @@ const catalog: Array<{ key: AchievementKey; title: string; description: string }
   {
     key: AchievementKey.EXAM_CHAMPION,
     title: "Exam Champion",
-    description: "Pass a weekly, milestone, or final exam.",
+    description: "Pass a weekly or final exam.",
   },
 ];
 

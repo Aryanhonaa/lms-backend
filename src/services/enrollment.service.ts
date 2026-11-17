@@ -22,8 +22,9 @@ export const enrollmentService = {
     return ENROLLABLE_STATUSES.includes(status);
   },
 
-  async ensureVisibleEnrollments(_userId: string): Promise<void> {
-    return;
+  async ensureVisibleEnrollments(userId: string): Promise<void> {
+    const { backfillFamilyEnrollments } = await import("./batch-family.service");
+    await backfillFamilyEnrollments(userId);
   },
 
   async listEligibleTrainees(
@@ -34,19 +35,40 @@ export const enrollmentService = {
     take: number,
     batchId?: string,
   ) {
-    await programService.requireTrainerOnProgram(user, programId);
+    if (user.role !== Role.TRAINER) {
+      throw ApiError.forbidden();
+    }
+    if (batchId) {
+      const batch = await prisma.programBatch.findUnique({
+        where: { id: batchId },
+        include: { trainers: { select: { userId: true } } },
+      });
+      if (!batch || batch.programId !== programId) {
+        throw ApiError.notFound("Batch not found");
+      }
+      const onBatch = batch.createdByUserId === user.id || batch.trainers.some((row) => row.userId === user.id);
+      if (!onBatch) {
+        await programService.requireTrainerOnProgram(user, programId);
+      }
+    } else {
+      await programService.requireTrainerOnProgram(user, programId);
+    }
     const program = await prisma.program.findUnique({ where: { id: programId } });
     if (!program) {
       throw ApiError.notFound("Program not found");
     }
 
-    const [trainees, total] = await Promise.all([
+    const [trainees, total, enrolledRows] = await Promise.all([
       userRepository.searchTrainees(query, skip, take),
       userRepository.countTrainees(query),
+      prisma.enrollment.findMany({
+        where: {
+          programId,
+          ...(batchId ? { batchId } : {}),
+        },
+        select: { userId: true, status: true },
+      }),
     ]);
-    const enrolledRows = batchId
-      ? await enrollmentRepository.findFactsByProgram(programId, batchId)
-      : await enrollmentRepository.findByProgram(programId);
     const enrolled = new Map(
       enrolledRows
         .filter((row) => !isExitedEnrollment(row.status))
@@ -193,7 +215,13 @@ export const enrollmentService = {
       throw ApiError.forbidden("You don't have permission to enroll trainees in this program.");
     }
 
-    const program = await programService.requireTrainerOnProgram(user, programId);
+    if (user.role !== Role.TRAINER) {
+      throw ApiError.forbidden("You don't have permission to enroll trainees in this program.");
+    }
+    const program = await prisma.program.findUnique({ where: { id: programId } });
+    if (!program) {
+      throw ApiError.notFound("Program not found");
+    }
     if (!this.canEnrollInto(program.status)) {
       throw ApiError.badRequest("Program must be approved before trainees can be enrolled.");
     }
@@ -201,9 +229,16 @@ export const enrollmentService = {
       throw ApiError.badRequest("Enroll trainees into a batch, not the course.");
     }
 
-    const batch = await prisma.programBatch.findUnique({ where: { id: batchId } });
+    const batch = await prisma.programBatch.findUnique({
+      where: { id: batchId },
+      include: { trainers: { select: { userId: true } } },
+    });
     if (!batch || batch.programId !== programId) {
       throw ApiError.notFound("Batch not found");
+    }
+    const onBatch = batch.createdByUserId === user.id || batch.trainers.some((row) => row.userId === user.id);
+    if (!onBatch) {
+      await programService.requireTrainerOnProgram(user, programId);
     }
     if (batch.endDate && batch.endDate.getTime() < Date.now()) {
       throw ApiError.badRequest("This batch is closed for new enrollments.");

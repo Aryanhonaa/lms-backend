@@ -38,8 +38,7 @@ const SOURCE_INCLUDE = {
       },
     },
   },
-  milestones: { include: { requirements: true, exam: { include: QUIZ_INCLUDE } } },
-  quizzes: { where: { dayId: null, weekId: null, milestoneId: null }, include: QUIZ_INCLUDE },
+  quizzes: { where: { dayId: null, weekId: null }, include: QUIZ_INCLUDE },
 } satisfies Prisma.ProgramInclude;
 
 type SourceQuiz = Prisma.QuizGetPayload<{ include: typeof QUIZ_INCLUDE }>;
@@ -55,8 +54,6 @@ type Rows = {
   reels: Prisma.ReelCreateManyInput[];
   assignments: Prisma.AssignmentCreateManyInput[];
   attachments: Prisma.ContentAttachmentCreateManyInput[];
-  milestones: Prisma.MilestoneCreateManyInput[];
-  requirements: Prisma.MilestoneRequirementCreateManyInput[];
   quizzes: Prisma.QuizCreateManyInput[];
   questions: Prisma.QuestionCreateManyInput[];
   options: Prisma.QuestionOptionCreateManyInput[];
@@ -121,8 +118,6 @@ export const programDuplicateService = {
       reels: [],
       assignments: [],
       attachments: [],
-      milestones: [],
-      requirements: [],
       quizzes: [],
       questions: [],
       options: [],
@@ -147,7 +142,7 @@ export const programDuplicateService = {
       return to;
     }
 
-    function addQuiz(quiz: SourceQuiz, parent: { dayId?: string; weekId?: string; milestoneId?: string; programId?: string }) {
+    function addQuiz(quiz: SourceQuiz, parent: { dayId?: string; weekId?: string; programId?: string }) {
       const quizId = randomUUID();
       rows.quizzes.push({
         id: quizId,
@@ -158,12 +153,12 @@ export const programDuplicateService = {
         timeLimitMin: quiz.timeLimitMin,
         maxAttempts: quiz.maxAttempts,
         randomized: quiz.randomized,
+        shuffleOptions: quiz.shuffleOptions,
         questionDrawCount: quiz.questionDrawCount,
         revealMode: quiz.revealMode === QuizRevealMode.SCHEDULED ? QuizRevealMode.HIDDEN : quiz.revealMode,
         revealAt: null,
         dayId: parent.dayId ?? null,
         weekId: parent.weekId ?? null,
-        milestoneId: parent.milestoneId ?? null,
         programId: parent.programId ?? null,
       });
       for (const question of quiz.questions) {
@@ -176,6 +171,7 @@ export const programDuplicateService = {
           prompt: question.prompt,
           points: question.points,
           modelAnswer: question.modelAnswer,
+          keepOptionOrder: question.keepOptionOrder,
         });
         for (const option of question.options) {
           rows.options.push({
@@ -365,29 +361,6 @@ export const programDuplicateService = {
       }
     }
 
-    for (const milestone of source.milestones) {
-      const milestoneId = randomUUID();
-      rows.milestones.push({
-        id: milestoneId,
-        programId: newProgramId,
-        sortOrder: milestone.sortOrder,
-        title: milestone.title,
-        afterWeekIndex: milestone.afterWeekIndex,
-      });
-      for (const requirement of milestone.requirements) {
-        rows.requirements.push({
-          milestoneId,
-          sortOrder: requirement.sortOrder,
-          kind: requirement.kind,
-          label: requirement.label,
-          targetCount: requirement.targetCount,
-        });
-      }
-      if (milestone.exam) {
-        addQuiz(milestone.exam, { milestoneId });
-      }
-    }
-
     for (const quiz of source.quizzes) {
       addQuiz(quiz, { programId: newProgramId });
     }
@@ -423,8 +396,6 @@ export const programDuplicateService = {
           if (rows.reels.length) await tx.reel.createMany({ data: rows.reels });
           if (rows.assignments.length) await tx.assignment.createMany({ data: rows.assignments });
           if (rows.attachments.length) await tx.contentAttachment.createMany({ data: rows.attachments });
-          if (rows.milestones.length) await tx.milestone.createMany({ data: rows.milestones });
-          if (rows.requirements.length) await tx.milestoneRequirement.createMany({ data: rows.requirements });
           if (rows.quizzes.length) await tx.quiz.createMany({ data: rows.quizzes });
           if (rows.questions.length) await tx.question.createMany({ data: rows.questions });
           if (rows.options.length) await tx.questionOption.createMany({ data: rows.options });

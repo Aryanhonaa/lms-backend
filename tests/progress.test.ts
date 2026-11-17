@@ -70,7 +70,7 @@ async function submitQuiz(cookie: string, quizId: string, questions: QuestionNod
   return submitted;
 }
 
-describe("progress engine, unlock engine, and milestones", () => {
+describe("progress engine and unlock engine", () => {
   beforeAll(async () => {
     const passwordHash = await hashPassword(password);
     await prisma.user.createMany({
@@ -86,7 +86,7 @@ describe("progress engine, unlock engine, and milestones", () => {
     await prisma.user.deleteMany({ where: { email: { in: emails } } });
   });
 
-  it("unlocks PROGRESSION content, tracks failed assessments, and gates milestone and final exams", async () => {
+  it("unlocks PROGRESSION content, tracks failed assessments, and gates the final exam", async () => {
     const trainerCookie = await login(accounts.trainer.email);
     const adminCookie = await login(accounts.admin.email);
     const traineeCookie = await login(accounts.trainee.email);
@@ -155,32 +155,6 @@ describe("progress engine, unlock engine, and milestones", () => {
       .set("Cookie", trainerCookie)
       .send({ title: "Build notes", maxScore: 100 });
     const assignmentId = assignment.body.data.program.weeks[0].days[0].assignments[0].id as string;
-
-    const milestone = await request(app)
-      .post(`/api/v1/trainer/programs/${programId}/milestones`)
-      .set("Cookie", trainerCookie)
-      .send({ title: "Checkpoint", afterWeekIndex: 0 });
-    const milestoneId = milestone.body.data.program.milestones[0].id as string;
-
-    await request(app)
-      .post(`/api/v1/trainer/milestones/${milestoneId}/requirements`)
-      .set("Cookie", trainerCookie)
-      .send({ label: "Complete week 1", kind: "WEEKS_COMPLETED", targetCount: 1 });
-    await request(app)
-      .post(`/api/v1/trainer/milestones/${milestoneId}/requirements`)
-      .set("Cookie", trainerCookie)
-      .send({ label: "Pass the weekly quiz", kind: "ASSESSMENTS_PASSED", targetCount: 1 });
-    await request(app)
-      .post(`/api/v1/trainer/milestones/${milestoneId}/requirements`)
-      .set("Cookie", trainerCookie)
-      .send({ label: "Assignment graded", kind: "ASSIGNMENTS_COMPLETE", targetCount: 1 });
-
-    const exam = await request(app)
-      .post(`/api/v1/trainer/milestones/${milestoneId}/exam`)
-      .set("Cookie", trainerCookie)
-      .send({ title: "Milestone exam", passingScore: 70, maxAttempts: 2, questions: [oneQuestion("Milestone?")] });
-    const milestoneExam = exam.body.data.program.milestones[0].exam;
-    const milestoneQuestions = milestoneExam.questions as QuestionNode[];
 
     const final = await request(app)
       .post(`/api/v1/trainer/programs/${programId}/final-exam`)
@@ -261,20 +235,10 @@ describe("progress engine, unlock engine, and milestones", () => {
     const stillLocked = await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
     expect(stillLocked.body.data.weeks.find((week: { title: string }) => week.title === "Week 2").status).toBe("LOCKED");
 
-    const milestoneLocked = await request(app)
-      .post(`/api/v1/trainee/assessments/${milestoneExam.id}/attempts`)
-      .set("Cookie", traineeCookie);
-    expect(milestoneLocked.status).toBe(403);
-    expect(milestoneLocked.body.error.code).toBe("CONTENT_LOCKED");
-
     const progressMissing = await request(app)
       .get(`/api/v1/trainee/programs/${programId}/progress`)
       .set("Cookie", traineeCookie);
     expect(progressMissing.status).toBe(200);
-    const assessmentsReq = progressMissing.body.data.milestones[0].requirements.find(
-      (row: { kind: string }) => row.kind === "ASSESSMENTS_PASSED",
-    );
-    expect(assessmentsReq.display).toBe("Missing");
     expect(progressMissing.body.data.finalExam.eligible).toBe(false);
     expect(progressMissing.body.data.finalExam.requirements.some((row: { met: boolean }) => !row.met)).toBe(true);
 
@@ -287,20 +251,9 @@ describe("progress engine, unlock engine, and milestones", () => {
     const progressReady = await request(app)
       .get(`/api/v1/trainee/programs/${programId}/progress`)
       .set("Cookie", traineeCookie);
-    const requirements = progressReady.body.data.milestones[0].requirements as Array<{ display: string }>;
-    expect(requirements.every((row) => row.display === "Complete")).toBe(true);
-    expect(progressReady.body.data.milestones[0].exam.status).not.toBe("LOCKED");
-
-    const failedMilestone = await submitQuiz(traineeCookie, milestoneExam.id, milestoneQuestions, false);
-    expect(failedMilestone.body.data.attempt.passed).toBe(false);
-
-    const stillIneligible = await request(app)
-      .get(`/api/v1/trainee/programs/${programId}/progress`)
-      .set("Cookie", traineeCookie);
-    expect(stillIneligible.body.data.finalExam.eligible).toBe(false);
-
-    const passedMilestone = await submitQuiz(traineeCookie, milestoneExam.id, milestoneQuestions, true);
-    expect(passedMilestone.body.data.attempt.passed).toBe(true);
+    expect(progressReady.status).toBe(200);
+    expect(progressReady.body.data.milestones).toBeUndefined();
+    expect(progressReady.body.data.finalExam.eligible).toBe(false);
 
     const week2Lesson = unlocked.body.data.weeks
       .find((week: { title: string }) => week.title === "Week 2")
@@ -320,13 +273,15 @@ describe("progress engine, unlock engine, and milestones", () => {
     expect(finalStart.status).toBe(201);
   });
 
-  it("unlocks SCHEDULED content by date, not by previous completion", async () => {
+  it("unlocks SCHEDULED content one calendar day at a time from the batch start", async () => {
     const trainerCookie = await login(accounts.trainer.email);
     const adminCookie = await login(accounts.admin.email);
     const traineeCookie = await login(accounts.trainee.email);
 
-    const past = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000).toISOString();
-    const future = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000).toISOString();
+    const now = new Date();
+    const startToday = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()));
+    const startYesterday = new Date(startToday);
+    startYesterday.setUTCDate(startYesterday.getUTCDate() - 1);
 
     const created = await request(app)
       .post("/api/v1/trainer/programs")
@@ -338,7 +293,6 @@ describe("progress engine, unlock engine, and milestones", () => {
         difficulty: "BEGINNER",
         durationWeeks: 2,
         trainingMode: "SCHEDULED",
-        startDate: past,
       });
     expect(created.status).toBe(201);
     const programId = created.body.data.program.id as string;
@@ -346,12 +300,12 @@ describe("progress engine, unlock engine, and milestones", () => {
     const week1Res = await request(app)
       .post(`/api/v1/trainer/programs/${programId}/weeks`)
       .set("Cookie", trainerCookie)
-      .send({ title: "Week 1", startDate: past });
-    const week1Id = week1Res.body.data.program.weeks[0].id as string;
+      .send({ title: "Week 1" });
+    const week1Id = week1Res.body.data.program.weeks.find((week: { title: string }) => week.title === "Week 1").id as string;
     const week2Res = await request(app)
       .post(`/api/v1/trainer/programs/${programId}/weeks`)
       .set("Cookie", trainerCookie)
-      .send({ title: "Week 2", startDate: future });
+      .send({ title: "Week 2" });
     const week2Id = week2Res.body.data.program.weeks.find((week: { title: string }) => week.title === "Week 2").id as string;
 
     const day1 = await request(app)
@@ -381,7 +335,14 @@ describe("progress engine, unlock engine, and milestones", () => {
 
     await request(app).post(`/api/v1/programs/${programId}/submit`).set("Cookie", trainerCookie);
     await request(app).post(`/api/v1/programs/${programId}/approve`).set("Cookie", adminCookie);
-    await enrollTraineeByEmail(app, trainerCookie, programId, accounts.trainee.email);
+
+    const batch = await request(app)
+      .post(`/api/v1/trainer/programs/${programId}/batches`)
+      .set("Cookie", trainerCookie)
+      .send({ name: "Scheduled run", capacity: 25, startDate: startToday.toISOString() });
+    expect(batch.status).toBe(201);
+    const batchId = batch.body.data.batch.id as string;
+    await enrollTraineeByEmail(app, trainerCookie, programId, accounts.trainee.email, batchId);
 
     const learn = await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
     expect(learn.status).toBe(200);
@@ -405,9 +366,9 @@ describe("progress engine, unlock engine, and milestones", () => {
     const stillLocked = await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
     expect(stillLocked.body.data.weeks.find((week: { title: string }) => week.title === "Week 2").status).toBe("LOCKED");
 
-    await prisma.week.update({
-      where: { id: week2Id },
-      data: { startDate: new Date(Date.now() - 60_000) },
+    await prisma.programBatch.update({
+      where: { id: batchId },
+      data: { startDate: startYesterday },
     });
 
     const opened = await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);

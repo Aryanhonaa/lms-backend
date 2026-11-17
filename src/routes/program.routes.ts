@@ -14,13 +14,12 @@ import {
   confirmUploadSchema,
   createProgramSchema,
   daySchema,
+  duplicateProgramSchema,
   enrollIntoProgramSchema,
   enrollTraineesSchema,
   lessonSchema,
-  milestoneSchema,
   quizSchema,
   reelSchema,
-  requirementSchema,
   resourceSchema,
   sessionSchema,
   updateProgramSchema,
@@ -78,6 +77,11 @@ trainerProgramRouter.patch(
   asyncHandler(programController.update),
 );
 trainerProgramRouter.delete("/programs/:programId", asyncHandler(programController.remove));
+trainerProgramRouter.post(
+  "/programs/:programId/duplicate",
+  validateBody(duplicateProgramSchema),
+  asyncHandler(programController.duplicate),
+);
 
 trainerProgramRouter.post(
   "/programs/:programId/weeks",
@@ -136,15 +140,8 @@ trainerProgramRouter.post("/days/:dayId/practice-quiz", validateBody(quizSchema)
 trainerProgramRouter.post("/weeks/:weekId/weekly-quiz", validateBody(quizSchema), asyncHandler(curriculumController.addWeeklyQuiz));
 trainerProgramRouter.post("/weeks/:weekId/weekly-exam", validateBody(quizSchema), asyncHandler(curriculumController.addWeeklyExam));
 trainerProgramRouter.post("/programs/:programId/final-exam", validateBody(quizSchema), asyncHandler(curriculumController.addFinalExam));
-trainerProgramRouter.post("/milestones/:milestoneId/exam", validateBody(quizSchema), asyncHandler(curriculumController.addMilestoneExam));
 trainerProgramRouter.patch("/quizzes/:quizId", validateBody(quizSchema), asyncHandler(curriculumController.updateQuiz));
 trainerProgramRouter.delete("/quizzes/:quizId", asyncHandler(curriculumController.deleteQuiz));
-
-trainerProgramRouter.post("/programs/:programId/milestones", validateBody(milestoneSchema), asyncHandler(curriculumController.addMilestone));
-trainerProgramRouter.patch("/milestones/:milestoneId", validateBody(milestoneSchema.partial()), asyncHandler(curriculumController.updateMilestone));
-trainerProgramRouter.delete("/milestones/:milestoneId", asyncHandler(curriculumController.deleteMilestone));
-trainerProgramRouter.post("/milestones/:milestoneId/requirements", validateBody(requirementSchema), asyncHandler(curriculumController.addRequirement));
-trainerProgramRouter.delete("/requirements/:requirementId", asyncHandler(curriculumController.deleteRequirement));
 
 trainerProgramRouter.post("/weeks/:weekId/sessions", validateBody(sessionSchema), asyncHandler(curriculumController.addSession));
 trainerProgramRouter.patch("/sessions/:sessionId", validateBody(updateSessionSchema), asyncHandler(curriculumController.updateSession));
