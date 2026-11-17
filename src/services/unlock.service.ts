@@ -1,6 +1,7 @@
 import {
   AssessmentAttemptStatus,
   AssignmentSubmissionStatus,
+  QuestionType,
   QuizKind,
   type AttendanceStatus,
   type TrainingMode,
@@ -8,7 +9,14 @@ import {
 import { programRepository } from "../repositories/program.repository";
 import { attendancePercentage } from "../utils/attendance-math";
 
-export type ProgressStatus = "LOCKED" | "AVAILABLE" | "IN_PROGRESS" | "COMPLETED" | "PASSED" | "FAILED";
+export type ProgressStatus =
+  | "LOCKED"
+  | "AVAILABLE"
+  | "IN_PROGRESS"
+  | "PENDING_REVIEW"
+  | "COMPLETED"
+  | "PASSED"
+  | "FAILED";
 export type LearnableItemType = "LESSON" | "VIDEO" | "RESOURCE" | "REEL";
 export type TrackedKind =
   | LearnableItemType
@@ -30,6 +38,7 @@ export type AttemptFact = {
   status: AssessmentAttemptStatus;
   score: number | null;
   passed: boolean | null;
+  needsReview?: boolean;
   submittedAt: Date | null;
 };
 
@@ -43,6 +52,7 @@ export type SubmissionFact = {
 
 export type QuizAttemptState = {
   inProgress: boolean;
+  pendingReview: boolean;
   passed: boolean;
   failed: boolean;
   bestScore: number | null;
@@ -209,17 +219,20 @@ export function buildFacts(input: {
 
   for (const [quizId, attempts] of byQuiz) {
     const closedAttempts = attempts.filter((row) => closed(row.status));
-    const scores = closedAttempts
+    const gradedAttempts = closedAttempts.filter((row) => !row.needsReview);
+    const pendingReview = closedAttempts.some((row) => row.needsReview === true);
+    const scores = gradedAttempts
       .map((row) => row.score)
       .filter((score): score is number => score !== null);
-    const passed = closedAttempts.some((row) => row.passed === true);
+    const passed = gradedAttempts.some((row) => row.passed === true);
     const submitted = closedAttempts
       .map((row) => row.submittedAt)
       .filter((value): value is Date => value !== null);
     quizzes.set(quizId, {
       inProgress: attempts.some((row) => row.status === AssessmentAttemptStatus.IN_PROGRESS),
+      pendingReview: pendingReview && !passed,
       passed,
-      failed: closedAttempts.length > 0 && !passed,
+      failed: gradedAttempts.length > 0 && !passed && !pendingReview,
       bestScore: scores.length ? Math.max(...scores) : null,
       lastSubmittedAt: submitted.length ? submitted.reduce((latest, value) => (value > latest ? value : latest)) : null,
       attemptsUsed: closedAttempts.length,
@@ -280,6 +293,7 @@ export function quizState(facts: TraineeFacts, quizId: string): QuizAttemptState
   return (
     facts.quizzes.get(quizId) ?? {
       inProgress: false,
+      pendingReview: false,
       passed: false,
       failed: false,
       bestScore: null,
@@ -399,10 +413,25 @@ export function quizClearsProgressionGate(
   return !quizCanRetry(quiz.maxAttempts, state);
 }
 
+/**
+ * Unlocks the next step only; progress, milestones and course outcome still use quizClearsProgressionGate.
+ * Quizzes with written answers stop blocking once submitted, so trainees never wait on manual grading.
+ */
+export function quizUnblocksNextStep(
+  quiz: { id: string; maxAttempts?: number | null; questions?: Array<{ type: QuestionType }> },
+  facts: TraineeFacts,
+): boolean {
+  if (quizClearsProgressionGate(quiz, facts)) {
+    return true;
+  }
+  const hasWritten = (quiz.questions ?? []).some((question) => question.type === QuestionType.WRITTEN);
+  return hasWritten && quizState(facts, quiz.id).attemptsUsed > 0;
+}
+
 export function practiceQuizzesPassed(day: DayNode, facts: TraineeFacts): boolean {
   return day.quizzes
     .filter((quiz) => quiz.kind === QuizKind.PRACTICE_QUIZ)
-    .every((quiz) => quizClearsProgressionGate(quiz, facts));
+    .every((quiz) => quizUnblocksNextStep(quiz, facts));
 }
 
 export function dayGatingComplete(day: DayNode, facts: TraineeFacts): boolean {
@@ -433,7 +462,7 @@ export function weekGatingComplete(week: WeekNode, facts: TraineeFacts): boolean
 
   return week.quizzes
     .filter((quiz) => quiz.kind === QuizKind.WEEKLY_QUIZ || quiz.kind === QuizKind.WEEKLY_EXAM)
-    .every((quiz) => quizClearsProgressionGate(quiz, facts));
+    .every((quiz) => quizUnblocksNextStep(quiz, facts));
 }
 
 export function itemWeight(kind: TrackedKind, required = true): number {
@@ -493,6 +522,9 @@ function applyAttemptStatus(access: AccessResult, state: QuizAttemptState): Acce
   }
   if (state.inProgress) {
     return withStatus("IN_PROGRESS");
+  }
+  if (state.pendingReview) {
+    return withStatus("PENDING_REVIEW");
   }
   if (state.failed) {
     return withStatus("FAILED");

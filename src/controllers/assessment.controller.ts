@@ -48,4 +48,19 @@ export const assessmentController = {
       ),
     );
   },
+
+  async gradingQueue(req: Request, res: Response) {
+    sendSuccess(
+      res,
+      await assessmentService.gradingQueue(req.user!, queryString(req, "programId"), queryString(req, "view")),
+    );
+  },
+
+  async gradingCount(req: Request, res: Response) {
+    sendSuccess(res, await assessmentService.gradingCount(req.user!));
+  },
+
+  async gradeAttempt(req: Request, res: Response) {
+    sendSuccess(res, await assessmentService.gradeAttempt(req.user!, routeParam(req, "id"), req.body.grades));
+  },
 };

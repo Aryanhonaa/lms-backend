@@ -1,5 +1,6 @@
 import {
   AssessmentAttemptStatus,
+  QuestionType,
   type AssessmentAttempt,
   type Question,
   type QuestionOption,
@@ -23,7 +24,24 @@ type SnapshotItem = {
 
 type AnswerInput = {
   questionId: string;
-  optionIds: string[];
+  optionIds?: string[];
+  text?: string;
+};
+
+type GradeInput = {
+  questionId: string;
+  pointsAwarded: number;
+  comment?: string;
+};
+
+type StoredAnswer = {
+  questionId: string;
+  selectedOptionIds: string[];
+  textAnswer?: string;
+  isCorrect: boolean;
+  pointsAwarded: number;
+  needsReview?: boolean;
+  trainerComment?: string;
 };
 
 type QuizRecord = NonNullable<Awaited<ReturnType<typeof assessmentRepository.findQuiz>>>;
@@ -175,12 +193,22 @@ function parseSnapshot(value: unknown): SnapshotItem[] {
   });
 }
 
-function effectiveQuestionCount(quiz: { questions: unknown[]; questionDrawCount: number | null }): number {
-  const bank = quiz.questions.length;
-  if (quiz.questionDrawCount == null || quiz.questionDrawCount <= 0) {
+function drawSize(bank: number, written: number, drawCount: number | null): number {
+  if (drawCount == null || drawCount <= 0) {
     return bank;
   }
-  return Math.min(quiz.questionDrawCount, bank);
+  return Math.min(bank, Math.max(drawCount, written));
+}
+
+function effectiveQuestionCount(quiz: {
+  questions: Array<{ type: QuestionType }>;
+  questionDrawCount: number | null;
+}): number {
+  return drawSize(quiz.questions.length, writtenQuestionCount(quiz), quiz.questionDrawCount);
+}
+
+function bySortOrder<T extends { sortOrder: number }>(items: T[]): T[] {
+  return [...items].sort((a, b) => a.sortOrder - b.sortOrder);
 }
 
 function buildSnapshot(
@@ -188,13 +216,15 @@ function buildSnapshot(
   randomized: boolean,
   drawCount: number | null,
 ): SnapshotItem[] {
-  const drawing = drawCount != null && drawCount > 0 && drawCount < questions.length;
+  const written = questions.filter((question) => question.type === QuestionType.WRITTEN);
+  const choice = questions.filter((question) => question.type !== QuestionType.WRITTEN);
+  const size = drawSize(questions.length, written.length, drawCount);
+  const drawing = size < questions.length;
   const shuffleQuestions = randomized || drawing;
   const shuffleOptions = randomized || drawing;
-  let selected = shuffleQuestions ? shuffle(questions) : [...questions].sort((a, b) => a.sortOrder - b.sortOrder);
-  if (drawing) {
-    selected = selected.slice(0, drawCount);
-  }
+  const drawnChoice = drawing ? shuffle(choice).slice(0, size - written.length) : choice;
+  const pool = [...written, ...drawnChoice];
+  const selected = shuffleQuestions ? shuffle(pool) : bySortOrder(pool);
   return selected.map((question) => {
     const options = shuffleOptions
       ? shuffle(question.options)
@@ -207,7 +237,7 @@ function safeQuestions(
   quiz: QuizRecord,
   snapshot: SnapshotItem[],
   revealKeys: boolean,
-  answers?: Array<{ questionId: string; selectedOptionIds: string[]; isCorrect: boolean; pointsAwarded: number }>,
+  answers?: StoredAnswer[],
 ) {
   const questionMap = new Map(quiz.questions.map((question) => [question.id, question]));
   const answerMap = new Map((answers ?? []).map((answer) => [answer.questionId, answer]));
@@ -222,13 +252,16 @@ function safeQuestions(
     return [
       {
         id: question.id,
+        type: question.type,
         prompt: question.prompt,
         points: question.points,
         selectedOptionIds: selected?.selectedOptionIds ?? [],
+        textAnswer: selected?.textAnswer ?? "",
         ...(revealKeys
           ? {
               isCorrect: selected?.isCorrect ?? false,
               pointsAwarded: selected?.pointsAwarded ?? 0,
+              trainerComment: selected?.trainerComment ?? "",
               correctOptionIds: question.options.filter((option) => option.isCorrect).map((option) => option.id),
             }
           : {}),
@@ -250,10 +283,15 @@ function safeQuestions(
   });
 }
 
+function percentScore(earned: number, total: number): number {
+  return total === 0 ? 0 : Math.round((earned / total) * 10000) / 100;
+}
+
+/** Multiple choice is marked immediately; non-blank written answers wait for the trainer. */
 function gradeAnswers(quiz: QuizRecord, snapshot: SnapshotItem[], answers: AnswerInput[]) {
   const questionMap = new Map(quiz.questions.map((question) => [question.id, question]));
   const snapshotMap = new Map(snapshot.map((item) => [item.questionId, item]));
-  const submitted = new Map<string, string[]>();
+  const submitted = new Map<string, { optionIds: string[]; text: string }>();
 
   for (const answer of answers) {
     if (submitted.has(answer.questionId)) {
@@ -263,27 +301,42 @@ function gradeAnswers(quiz: QuizRecord, snapshot: SnapshotItem[], answers: Answe
     if (!snap) {
       throw ApiError.badRequest("Answer does not belong to this attempt");
     }
+    const optionIds = answer.optionIds ?? [];
     const allowed = new Set(snap.optionIds);
-    if (answer.optionIds.some((id) => !allowed.has(id))) {
+    if (optionIds.some((id) => !allowed.has(id))) {
       throw ApiError.badRequest("Invalid option for this question");
     }
-    submitted.set(answer.questionId, [...new Set(answer.optionIds)]);
+    submitted.set(answer.questionId, { optionIds: [...new Set(optionIds)], text: (answer.text ?? "").trim() });
   }
 
   let earned = 0;
   let total = 0;
   const graded = snapshot.map((item) => {
     const question = questionMap.get(item.questionId);
+    const answer = submitted.get(item.questionId);
     if (!question) {
       return {
         questionId: item.questionId,
-        selectedOptionIds: submitted.get(item.questionId) ?? [],
+        selectedOptionIds: answer?.optionIds ?? [],
+        textAnswer: "",
         isCorrect: false,
         pointsAwarded: 0,
+        needsReview: false,
       };
     }
     total += question.points;
-    const selected = submitted.get(item.questionId) ?? [];
+    if (question.type === QuestionType.WRITTEN) {
+      const text = answer?.text ?? "";
+      return {
+        questionId: question.id,
+        selectedOptionIds: [],
+        textAnswer: text,
+        isCorrect: false,
+        pointsAwarded: 0,
+        needsReview: text.length > 0,
+      };
+    }
+    const selected = answer?.optionIds ?? [];
     const correctIds = question.options.filter((option) => option.isCorrect).map((option) => option.id);
     const isCorrect = sameSet(selected, correctIds);
     const pointsAwarded = isCorrect ? question.points : 0;
@@ -291,13 +344,17 @@ function gradeAnswers(quiz: QuizRecord, snapshot: SnapshotItem[], answers: Answe
     return {
       questionId: question.id,
       selectedOptionIds: selected,
+      textAnswer: "",
       isCorrect,
       pointsAwarded,
+      needsReview: false,
     };
   });
 
-  const score = total === 0 ? 0 : Math.round((earned / total) * 10000) / 100;
-  return { graded, score, earned, total };
+  const needsReview = graded.some((answer) => answer.needsReview);
+  const score = needsReview ? null : percentScore(earned, total);
+  const passed = score === null ? null : score >= quiz.passingScore;
+  return { graded, score, passed, needsReview, earned, total };
 }
 
 function toNumber(value: unknown): number | null {
@@ -317,6 +374,7 @@ function summarizeAttempts(attempts: Array<{
   status: AssessmentAttemptStatus;
   score: unknown;
   passed: boolean | null;
+  needsReview: boolean;
   startedAt: Date;
   submittedAt: Date | null;
   deadlineAt: Date | null;
@@ -327,6 +385,7 @@ function summarizeAttempts(attempts: Array<{
     status: attempt.status,
     score: toNumber(attempt.score),
     passed: attempt.passed,
+    needsReview: attempt.needsReview,
     startedAt: attempt.startedAt,
     submittedAt: attempt.submittedAt,
     deadlineAt: attempt.deadlineAt,
@@ -338,8 +397,13 @@ function summarizeAttempts(attempts: Array<{
     attemptsUsed: closed.length,
     bestScore: scores.length ? Math.max(...scores) : null,
     passed: closed.some((attempt) => attempt.passed === true),
+    pendingReview: closed.some((attempt) => attempt.needsReview),
     activeAttemptId: history.find((attempt) => attempt.status === AssessmentAttemptStatus.IN_PROGRESS)?.id ?? null,
   };
+}
+
+function writtenQuestionCount(quiz: { questions: Array<{ type: QuestionType }> }): number {
+  return quiz.questions.filter((question) => question.type === QuestionType.WRITTEN).length;
 }
 
 function locationLabel(quiz: QuizLocation & { day?: { title: string; week: { title: string } } | null; week?: { title: string } | null; milestone?: { title: string } | null }) {
@@ -376,12 +440,13 @@ async function closeExpired(
   }
 
   const snapshot = parseSnapshot(attempt.questionSnapshot);
-  const { graded, score } = gradeAnswers(quiz, snapshot, []);
+  const { graded, score, passed, needsReview } = gradeAnswers(quiz, snapshot, []);
   return assessmentRepository.saveGradedAttempt({
     attemptId: attempt.id,
     status: AssessmentAttemptStatus.TIMED_OUT,
     score,
-    passed: score >= quiz.passingScore,
+    passed,
+    needsReview,
     answers: graded,
   });
 }
@@ -397,8 +462,10 @@ function toAttemptPayload(
     submittedAt: Date | null;
     score: unknown;
     passed: boolean | null;
+    needsReview?: boolean;
+    gradedAt?: Date | null;
     questionSnapshot: unknown;
-    answers?: Array<{ questionId: string; selectedOptionIds: string[]; isCorrect: boolean; pointsAwarded: number }>;
+    answers?: StoredAnswer[];
   },
   closed: boolean,
   revealKeys: boolean,
@@ -414,15 +481,19 @@ function toAttemptPayload(
     submittedAt: attempt.submittedAt,
     score: closed ? toNumber(attempt.score) : null,
     passed: closed ? attempt.passed : null,
+    needsReview: closed ? Boolean(attempt.needsReview) : false,
+    gradedAt: attempt.gradedAt ?? null,
     passingScore: quiz.passingScore,
     answersVisible: revealKeys,
     questions:
       closed && !revealKeys
         ? questions.map((question) => ({
             id: question.id,
+            type: question.type,
             prompt: question.prompt,
             points: question.points,
             selectedOptionIds: [] as string[],
+            textAnswer: "",
             options: [] as Array<{ id: string; label: string }>,
           }))
         : questions,
@@ -446,7 +517,7 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
   const canStart =
     access.status !== "LOCKED" &&
     quiz.questions.length > 0 &&
-    (summary.activeAttemptId !== null || remaining === null || remaining > 0);
+    (summary.activeAttemptId !== null || (!summary.pendingReview && (remaining === null || remaining > 0)));
 
   return {
     assessment: {
@@ -461,6 +532,7 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
       questionDrawCount: quiz.questionDrawCount,
       questionCount: effectiveQuestionCount(quiz),
       questionBankCount: quiz.questions.length,
+      writtenQuestionCount: writtenQuestionCount(quiz),
       revealMode: quiz.revealMode,
       revealAt: quiz.revealAt,
       answersVisible: answersVisibleToTrainee(quiz),
@@ -475,6 +547,7 @@ async function catalogForQuiz(user: AuthUser, quiz: QuizRecord) {
     attemptsRemaining: remaining,
     bestScore: summary.bestScore,
     passed: summary.passed,
+    pendingReview: summary.pendingReview,
     activeAttemptId: summary.activeAttemptId,
     canStart,
   };
@@ -517,6 +590,14 @@ export const assessmentService = {
       if (!timedOut) {
         return { created: false, attempt: toAttemptPayload(quiz, open, false, false) };
       }
+    }
+
+    if (catalog.pendingReview) {
+      throw new ApiError(
+        403,
+        "Your last attempt is waiting for your trainer to grade it. You can try again once it's graded.",
+        "PENDING_REVIEW",
+      );
     }
 
     const used = await assessmentRepository.countClosedAttempts(view.enrollment.id, quiz.id);
@@ -566,12 +647,13 @@ export const assessmentService = {
 
     const expired = deadlinePassed(attempt.deadlineAt);
     const snapshot = parseSnapshot(attempt.questionSnapshot);
-    const { graded, score } = gradeAnswers(attempt.quiz, snapshot, expired ? [] : answers);
+    const { graded, score, passed, needsReview } = gradeAnswers(attempt.quiz, snapshot, expired ? [] : answers);
     const saved = await assessmentRepository.saveGradedAttempt({
       attemptId: attempt.id,
       status: expired ? AssessmentAttemptStatus.TIMED_OUT : AssessmentAttemptStatus.SUBMITTED,
       score,
-      passed: score >= attempt.quiz.passingScore,
+      passed,
+      needsReview,
       answers: graded,
     });
 
@@ -594,6 +676,10 @@ export const assessmentService = {
           scope.batchId,
         )
       : null;
+    const pendingCounts = await assessmentRepository.countPendingReviewByQuiz(
+      quizzes.map((quiz) => quiz.id),
+      scope.batchId,
+    );
     return {
       assessments: quizzes.map((quiz) => {
         const programId = programIdFromQuiz(quiz);
@@ -607,18 +693,79 @@ export const assessmentService = {
           maxAttempts: quiz.maxAttempts,
           randomized: quiz.randomized,
           questionDrawCount: quiz.questionDrawCount,
-          questionCount:
-            quiz.questionDrawCount != null && quiz.questionDrawCount > 0
-              ? Math.min(quiz.questionDrawCount, quiz._count.questions)
-              : quiz._count.questions,
+          questionCount: drawSize(quiz._count.questions, writtenQuestionCount(quiz), quiz.questionDrawCount),
           questionBankCount: quiz._count.questions,
+          writtenQuestionCount: writtenQuestionCount(quiz),
           attemptCount: attemptCounts ? (attemptCounts.get(quiz.id) ?? 0) : quiz._count.attempts,
+          pendingReviewCount: pendingCounts.get(quiz.id) ?? 0,
           programId,
           programTitle: programTitleFromQuiz(quiz),
           location: locationLabel(quiz),
         };
       }),
     };
+  },
+
+  async gradingQueue(user: AuthUser, programIdRaw?: unknown, viewRaw?: unknown) {
+    const view = viewRaw === "graded" ? "graded" : "pending";
+    const scope = await resolveTrainerWorkScope(user, programIdRaw);
+    const quizzes = await assessmentRepository.findQuizzesForTrainer(scope.programIds);
+    const quizById = new Map(quizzes.map((quiz) => [quiz.id, quiz]));
+    const quizIds = quizzes.map((quiz) => quiz.id);
+    const weekAgo = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const [rows, pending, gradedThisWeek] = await Promise.all([
+      assessmentRepository.findGradingQueue(quizIds, view, view === "graded" ? weekAgo : undefined),
+      assessmentRepository.countPendingReviewForPrograms(scope.programIds),
+      assessmentRepository.countGradedSince(quizIds, weekAgo),
+    ]);
+
+    const items = rows.flatMap((row) => {
+      const quiz = quizById.get(row.quizId);
+      if (!quiz) {
+        return [];
+      }
+      const writtenAnswers = row.answers.filter((answer) => answer.textAnswer !== null);
+      return [
+        {
+          attemptId: row.id,
+          attemptNumber: row.attemptNumber,
+          status: row.status,
+          score: toNumber(row.score),
+          passed: row.passed,
+          needsReview: row.needsReview,
+          submittedAt: row.submittedAt,
+          gradedAt: row.gradedAt,
+          enrollmentId: row.enrollmentId,
+          pendingAnswerCount: row.answers.filter((answer) => answer.needsReview).length,
+          writtenAnswerCount: writtenAnswers.length,
+          trainee: row.enrollment.user,
+          batch: row.enrollment.batch,
+          quiz: {
+            id: quiz.id,
+            title: quiz.title,
+            kind: quiz.kind,
+            passingScore: quiz.passingScore,
+            location: locationLabel(quiz),
+          },
+          programId: programIdFromQuiz(quiz),
+          programTitle: programTitleFromQuiz(quiz),
+        },
+      ];
+    });
+
+    const oldestPendingAt =
+      view === "pending" ? (items.find((item) => item.submittedAt)?.submittedAt ?? null) : null;
+
+    return {
+      view,
+      items,
+      summary: { pending, gradedThisWeek, oldestPendingAt },
+    };
+  },
+
+  async gradingCount(user: AuthUser) {
+    const programIds = await programService.listProgramIdsForTrainer(user.id);
+    return { pending: await assessmentRepository.countPendingReviewForPrograms(programIds) };
   },
 
   async getForTrainer(user: AuthUser, quizId: string, programIdRaw?: unknown, batchIdRaw?: unknown) {
@@ -661,6 +808,8 @@ export const assessmentService = {
               status: latest.status,
               score: toNumber(latest.score),
               passed: latest.passed,
+              needsReview: latest.needsReview,
+              gradedAt: latest.gradedAt,
               startedAt: latest.startedAt,
               submittedAt: latest.submittedAt,
               answers: latest.answers,
@@ -672,6 +821,7 @@ export const assessmentService = {
           status: row.status,
           score: toNumber(row.score),
           passed: row.passed,
+          needsReview: row.needsReview,
           startedAt: row.startedAt,
           submittedAt: row.submittedAt,
         })),
@@ -681,8 +831,10 @@ export const assessmentService = {
     const closedLatest = roster
       .map((row) => row.latest)
       .filter((row): row is NonNullable<(typeof roster)[number]["latest"]> => Boolean(row && closedStatuses(row.status)));
-    const scores = closedLatest.map((row) => row.score).filter((score): score is number => score !== null);
+    const gradedLatest = closedLatest.filter((row) => !row.needsReview);
+    const scores = gradedLatest.map((row) => row.score).filter((score): score is number => score !== null);
     const submittedCount = closedLatest.length;
+    const needsReviewCount = closedLatest.length - gradedLatest.length;
     const inProgressCount = roster.filter((row) => row.status === AssessmentAttemptStatus.IN_PROGRESS).length;
     const notStartedCount = roster.filter((row) => row.latest === null).length;
 
@@ -699,6 +851,7 @@ export const assessmentService = {
         questionDrawCount: quiz.questionDrawCount,
         questionCount: effectiveQuestionCount(quiz),
         questionBankCount: quiz.questions.length,
+        writtenQuestionCount: writtenQuestionCount(quiz),
         revealMode: quiz.revealMode,
         revealAt: quiz.revealAt,
         attemptCount: attempts.length,
@@ -707,8 +860,10 @@ export const assessmentService = {
         location: locationLabel(quiz),
         questions: quiz.questions.map((question) => ({
           id: question.id,
+          type: question.type,
           prompt: question.prompt,
           points: question.points,
+          modelAnswer: question.modelAnswer,
           options: question.options.map((option) => ({
             id: option.id,
             label: option.label,
@@ -719,15 +874,16 @@ export const assessmentService = {
       summary: {
         rosterCount: roster.length,
         submittedCount,
+        needsReviewCount,
         inProgressCount,
         notStartedCount,
         averageScore: scores.length
           ? Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 100) / 100
           : null,
         passRate:
-          submittedCount === 0
+          gradedLatest.length === 0
             ? null
-            : Math.round((closedLatest.filter((row) => row.passed === true).length / submittedCount) * 10000) / 100,
+            : Math.round((gradedLatest.filter((row) => row.passed === true).length / gradedLatest.length) * 10000) / 100,
       },
       attempts: attempts.map((attempt) => ({
         id: attempt.id,
@@ -735,6 +891,7 @@ export const assessmentService = {
         status: attempt.status,
         score: toNumber(attempt.score),
         passed: attempt.passed,
+        needsReview: attempt.needsReview,
         startedAt: attempt.startedAt,
         submittedAt: attempt.submittedAt,
         enrollmentId: attempt.enrollmentId,
@@ -743,6 +900,100 @@ export const assessmentService = {
         answers: attempt.answers,
       })),
       roster,
+    };
+  },
+
+  async gradeAttempt(user: AuthUser, attemptId: string, grades: GradeInput[]) {
+    const attempt = await assessmentRepository.findAttempt(attemptId);
+    if (!attempt) {
+      throw ApiError.notFound("Attempt not found");
+    }
+    const programId = programIdFromQuiz(attempt.quiz);
+    await programService.requireTrainerOnProgram(user, programId);
+    if (!closedStatuses(attempt.status)) {
+      throw ApiError.badRequest("This attempt hasn't been submitted yet.");
+    }
+
+    const questionMap = new Map(attempt.quiz.questions.map((question) => [question.id, question]));
+    const answerMap = new Map(attempt.answers.map((answer) => [answer.questionId, answer]));
+    const updates = new Map<string, { questionId: string; pointsAwarded: number; isCorrect: boolean; comment: string }>();
+    for (const grade of grades) {
+      if (updates.has(grade.questionId)) {
+        throw ApiError.badRequest("Each question can only be graded once per save.");
+      }
+      const question = questionMap.get(grade.questionId);
+      if (!question || !answerMap.has(grade.questionId)) {
+        throw ApiError.badRequest("That question is not part of this attempt.");
+      }
+      if (question.type !== QuestionType.WRITTEN) {
+        throw ApiError.badRequest("Only written answers are graded by hand.");
+      }
+      if (grade.pointsAwarded > question.points) {
+        throw ApiError.badRequest(`A question is worth at most ${question.points} points.`);
+      }
+      updates.set(grade.questionId, {
+        questionId: grade.questionId,
+        pointsAwarded: grade.pointsAwarded,
+        isCorrect: grade.pointsAwarded === question.points,
+        comment: (grade.comment ?? "").trim(),
+      });
+    }
+
+    let earned = 0;
+    let total = 0;
+    let stillPending = false;
+    for (const item of parseSnapshot(attempt.questionSnapshot)) {
+      const question = questionMap.get(item.questionId);
+      if (!question) {
+        continue;
+      }
+      total += question.points;
+      const update = updates.get(item.questionId);
+      const answer = answerMap.get(item.questionId);
+      earned += update ? update.pointsAwarded : (answer?.pointsAwarded ?? 0);
+      if (!update && answer?.needsReview) {
+        stillPending = true;
+      }
+    }
+    const score = stillPending ? null : percentScore(earned, total);
+    const passed = score === null ? null : score >= attempt.quiz.passingScore;
+    const regrade = !attempt.needsReview;
+
+    const saved = await assessmentRepository.saveTrainerGrades({
+      attemptId: attempt.id,
+      gradedByUserId: user.id,
+      grades: [...updates.values()],
+      score,
+      passed,
+      needsReview: stillPending,
+    });
+
+    await progressService.recomputeEnrollment(attempt.enrollmentId);
+
+    if (score !== null) {
+      const programTitle = programTitleFromQuiz(attempt.quiz);
+      await announcementRepository.create({
+        title: `${regrade ? "Grade updated" : "Graded"}: ${attempt.quiz.title}`,
+        body: `Your trainer ${regrade ? "updated the grade for" : "graded"} “${attempt.quiz.title}”${
+          programTitle ? ` in ${programTitle}` : ""
+        }. Your score is ${score}% (${passed ? "passed" : `pass mark ${attempt.quiz.passingScore}%`}).`,
+        audience: "TRAINEES_SELECTED",
+        programId,
+        batchId: attempt.enrollment.batchId,
+        createdByUserId: user.id,
+        traineeIds: [attempt.enrollment.userId],
+      });
+    }
+
+    return {
+      attempt: {
+        id: saved.id,
+        score: toNumber(saved.score),
+        passed: saved.passed,
+        needsReview: saved.needsReview,
+        gradedAt: saved.gradedAt,
+        answers: saved.answers,
+      },
     };
   },
 };

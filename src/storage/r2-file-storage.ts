@@ -1,4 +1,5 @@
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
@@ -123,6 +124,21 @@ export const r2FileStorage: FileStorage = {
       await s3().send(new DeleteObjectCommand({ Bucket: bucket(), Key: safe }));
     } catch (error) {
       throw new ApiError(502, "We couldn't delete this file. Please try again.", "STORAGE_UNAVAILABLE", error);
+    }
+  },
+
+  async copy(sourceKey: string, destinationKey: string): Promise<void> {
+    const source = assertSafeStorageKey(sourceKey);
+    try {
+      await s3().send(
+        new CopyObjectCommand({
+          Bucket: bucket(),
+          CopySource: `${bucket()}/${encodeURI(source)}`,
+          Key: assertSafeStorageKey(destinationKey),
+        }),
+      );
+    } catch (error) {
+      throw new ApiError(502, "We couldn't copy a stored file. Please try again.", "STORAGE_UNAVAILABLE", error);
     }
   },
 

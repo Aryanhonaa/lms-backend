@@ -5,6 +5,7 @@ export type UploadPurpose =
   | "VIDEO"
   | "REEL"
   | "RESOURCE"
+  | "CALL_RECORDING"
   | "LESSON_ATTACHMENT"
   | "ASSIGNMENT_ATTACHMENT"
   | "SUBMISSION"
@@ -41,6 +42,7 @@ const MIME_BY_EXT: Record<string, string[]> = {
 const PURPOSE_EXTENSIONS: Record<UploadPurpose, string[]> = {
   VIDEO: ["mp4", "webm", "mov"],
   REEL: ["mp4", "webm", "mov"],
+  CALL_RECORDING: ["mp3", "wav", "m4a", "ogg"],
   RESOURCE: ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "png", "jpg", "jpeg", "webp", "gif", "txt", "md", "csv", "zip"],
   LESSON_ATTACHMENT: ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "png", "jpg", "jpeg", "webp", "gif", "txt", "md", "csv"],
   ASSIGNMENT_ATTACHMENT: ["pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "png", "jpg", "jpeg", "webp", "gif", "txt", "md", "csv", "zip"],
@@ -52,7 +54,7 @@ export function maxBytesForPurpose(purpose: UploadPurpose, overrideMb?: number):
   if (overrideMb && overrideMb > 0) {
     return overrideMb * 1024 * 1024;
   }
-  if (purpose === "VIDEO" || purpose === "REEL") {
+  if (purpose === "VIDEO" || purpose === "REEL" || purpose === "CALL_RECORDING") {
     return env.maxVideoUploadMb * 1024 * 1024;
   }
   if (purpose === "AVATAR") {
