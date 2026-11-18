@@ -229,7 +229,7 @@ async function assertActiveTrainer(userId: string | null | undefined) {
   }
 }
 
-async function assertBatchableProgram(programId: string, _user?: AuthUser) {
+async function assertBatchableProgram(programId: string, user?: AuthUser) {
   const program = await prisma.program.findUnique({
     where: { id: programId },
     select: { id: true, title: true, status: true, createdByUserId: true },
@@ -239,6 +239,9 @@ async function assertBatchableProgram(programId: string, _user?: AuthUser) {
   }
   if (!BATCHABLE_STATUSES.includes(program.status)) {
     throw ApiError.badRequest("Only admin-approved courses can be added to a batch.");
+  }
+  if (user?.role === Role.TRAINER) {
+    await programService.requireTrainerOnProgram(user, programId);
   }
   return program;
 }
@@ -475,10 +478,25 @@ export const batchService = {
     if (user.role !== Role.TRAINER && !isProgramReviewer(user.role)) {
       throw ApiError.forbidden();
     }
+
+    const programWhere: Prisma.ProgramWhereInput = isProgramReviewer(user.role)
+      ? { status: { in: BATCHABLE_STATUSES } }
+      : {
+          status: { in: BATCHABLE_STATUSES },
+          OR: [{ createdByUserId: user.id }, { trainers: { some: { userId: user.id } } }],
+        };
+
     const [programs, trainers] = await Promise.all([
       prisma.program.findMany({
-        where: { status: { in: BATCHABLE_STATUSES } },
-        select: { id: true, title: true, category: true, durationWeeks: true, status: true },
+        where: programWhere,
+        select: {
+          id: true,
+          title: true,
+          category: true,
+          durationWeeks: true,
+          status: true,
+          trainingMode: true,
+        },
         orderBy: { title: "asc" },
       }),
       prisma.user.findMany({

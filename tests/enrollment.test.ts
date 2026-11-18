@@ -233,15 +233,9 @@ describe("admin role, approval, and trainer enrollment", () => {
     const beforeList = await request(app).get("/api/v1/trainer/programs").set("Cookie", otherTrainerCookie);
     expect(beforeList.body.data.programs.some((item: { id: string }) => item.id === programId)).toBe(false);
 
-    const adminCannotAssignAfterApproval = await request(app)
-      .put(`/api/v1/admin/programs/${programId}/trainers`)
-      .set("Cookie", adminCookie)
-      .send({ trainerIds: [otherTrainer.id] });
-    expect(adminCannotAssignAfterApproval.status).toBe(403);
-
     const assigned = await request(app)
       .post(`/api/v1/admin/programs/${programId}/trainers`)
-      .set("Cookie", superAdminCookie)
+      .set("Cookie", adminCookie)
       .send({ trainerId: otherTrainer.id });
     expect(assigned.status).toBe(201);
     const trainers = assigned.body.data.trainers as Array<{ userId: string; role: string }>;
@@ -258,12 +252,18 @@ describe("admin role, approval, and trainer enrollment", () => {
 
     const replaced = await request(app)
       .put(`/api/v1/admin/programs/${programId}/trainers`)
-      .set("Cookie", superAdminCookie)
+      .set("Cookie", adminCookie)
       .send({ trainerIds: [otherTrainer.id] });
     expect(replaced.status).toBe(200);
     const replacedTrainers = replaced.body.data.program.trainers as Array<{ userId: string; role: string }>;
     expect(replacedTrainers.some((row) => row.userId === owner.id && row.role === "OWNER")).toBe(true);
     expect(replacedTrainers.some((row) => row.userId === otherTrainer.id && row.role === "CO_TRAINER")).toBe(true);
+
+    const superAdminCanAlsoAssign = await request(app)
+      .put(`/api/v1/admin/programs/${programId}/trainers`)
+      .set("Cookie", superAdminCookie)
+      .send({ trainerIds: [otherTrainer.id] });
+    expect(superAdminCanAlsoAssign.status).toBe(200);
 
     const afterList = await request(app).get("/api/v1/trainer/programs").set("Cookie", otherTrainerCookie);
     expect(afterList.body.data.programs.some((item: { id: string }) => item.id === programId)).toBe(true);

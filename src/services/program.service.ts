@@ -8,7 +8,6 @@ import { ApiError } from "../utils/api-error";
 import { isProgramReviewer } from "../utils/roles";
 
 const EDITABLE_STATUSES: ProgramStatus[] = [ProgramStatus.DRAFT, ProgramStatus.REJECTED];
-const POST_APPROVAL_STATUSES: ProgramStatus[] = [ProgramStatus.APPROVED, ProgramStatus.PUBLISHED];
 
 function parseDate(value: string | Date | null | undefined): Date | null {
   if (!value) {
@@ -25,10 +24,6 @@ function assertCanAssignTrainers(user: AuthUser, program: { status: ProgramStatu
 
   if (program.status === ProgramStatus.DRAFT) {
     throw ApiError.notFound("Program not found");
-  }
-
-  if (POST_APPROVAL_STATUSES.includes(program.status) && user.role !== Role.SUPER_ADMIN) {
-    throw ApiError.forbidden("Only a super admin can change trainers after a course is approved");
   }
 }
 

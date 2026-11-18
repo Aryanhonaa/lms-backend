@@ -24,14 +24,18 @@ async function login(email: string) {
   return cookieFrom(response);
 }
 
-async function createSubmittedProgram(trainerCookie: string, title: string) {
+async function createSubmittedProgram(
+  trainerCookie: string,
+  title: string,
+  trainingMode: "PROGRESSION" | "SCHEDULED" = "PROGRESSION",
+) {
   const created = await request(app).post("/api/v1/trainer/programs").set("Cookie", trainerCookie).send({
     title,
     description: "Reusable course",
     category: "Web",
     difficulty: "BEGINNER",
     durationWeeks: 1,
-    trainingMode: "PROGRESSION",
+    trainingMode,
   });
   expect(created.status).toBe(201);
   const programId = created.body.data.program.id as string;
@@ -111,7 +115,20 @@ describe("course runs (batches) as independent offerings", () => {
     const traineeTwo = await prisma.user.findUniqueOrThrow({ where: { email: accounts.traineeTwo.email } });
 
     const programId = await createSubmittedProgram(trainerCookie, `Web Fundamentals ${suffix}`);
+    const scheduledId = await createSubmittedProgram(trainerCookie, `Scheduled Ops ${suffix}`, "SCHEDULED");
     expect((await request(app).post(`/api/v1/programs/${programId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+    expect((await request(app).post(`/api/v1/programs/${scheduledId}/approve`).set("Cookie", adminCookie)).status).toBe(200);
+
+    const catalog = await request(app).get("/api/v1/trainer/batch-catalog").set("Cookie", trainerCookie);
+    expect(catalog.status).toBe(200);
+    expect(catalog.body.data.programs.some((row: { id: string }) => row.id === programId)).toBe(true);
+    expect(catalog.body.data.programs.some((row: { id: string; trainingMode?: string }) => row.id === scheduledId)).toBe(
+      true,
+    );
+
+    const otherCatalog = await request(app).get("/api/v1/trainer/batch-catalog").set("Cookie", otherTrainerCookie);
+    expect(otherCatalog.status).toBe(200);
+    expect(otherCatalog.body.data.programs.some((row: { id: string }) => row.id === programId)).toBe(false);
 
     const september = await request(app)
       .post(`/api/v1/trainer/programs/${programId}/batches`)
