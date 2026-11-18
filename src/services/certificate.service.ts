@@ -46,9 +46,15 @@ export type PendingCourseReview = {
 function pendingReviewFrom(
   eligibility: CertificateEligibility,
   enrollment: { id: string; batchId: string; batch?: { name: string } | null },
+  familyAcademicsReady: boolean,
 ): PendingCourseReview | null {
   const review = eligibility.requirements.find((row) => row.key === COURSE_REVIEW_REQUIREMENT_KEY);
-  if (!review || review.met || !academicRequirementsMet(eligibility.requirements)) {
+  if (
+    !familyAcademicsReady ||
+    !review ||
+    review.met ||
+    !academicRequirementsMet(eligibility.requirements)
+  ) {
     return null;
   }
   return {
@@ -137,6 +143,16 @@ type AssignmentFamily = {
   courseTitles: string[];
   missingAssigned: boolean;
 };
+
+async function familyAcademicsReady(family: AssignmentFamily): Promise<boolean> {
+  if (family.missingAssigned || !family.primaryEnrollmentId) {
+    return false;
+  }
+  const evaluations = await Promise.all(
+    family.assignedEnrollmentIds.map((id) => certificateEligibilityService.evaluate(id)),
+  );
+  return evaluations.every((row) => academicRequirementsMet(row.requirements));
+}
 
 async function loadAssignmentFamily(enrollmentId: string): Promise<AssignmentFamily> {
   const enrollment = await prisma.enrollment.findUnique({
@@ -276,8 +292,9 @@ export const certificateService = {
       if (issued) {
         continue;
       }
+      const family = await loadAssignmentFamily(enrollment.id);
       const eligibility = await certificateEligibilityService.evaluate(enrollment.id);
-      const pending = pendingReviewFrom(eligibility, enrollment);
+      const pending = pendingReviewFrom(eligibility, enrollment, await familyAcademicsReady(family));
       if (pending) {
         pendingReviews.push(pending);
       }
@@ -322,16 +339,18 @@ export const certificateService = {
     const family = await loadAssignmentFamily(enrollment.id);
     const eligibility = await certificateEligibilityService.evaluate(enrollment.id);
     const row = await certificateRepository.findByEnrollments(family.assignedEnrollmentIds);
-    const familyEligible =
+    const evaluations = await Promise.all(
+      family.assignedEnrollmentIds.map((id) => certificateEligibilityService.evaluate(id)),
+    );
+    const academicsReady =
       !family.missingAssigned &&
       Boolean(family.primaryEnrollmentId) &&
-      (
-        await Promise.all(family.assignedEnrollmentIds.map((id) => certificateEligibilityService.evaluate(id)))
-      ).every((item) => item.eligible);
+      evaluations.every((item) => academicRequirementsMet(item.requirements));
+    const familyEligible = academicsReady && evaluations.every((item) => item.eligible);
     return {
       eligible: familyEligible,
       requirements: eligibility.requirements,
-      pendingReview: Boolean(pendingReviewFrom(eligibility, enrollment)),
+      pendingReview: Boolean(pendingReviewFrom(eligibility, enrollment, academicsReady)),
       certificate: row ? toOwned(row) : null,
     };
   },

@@ -162,8 +162,10 @@ async function catalogForAssignment(user: AuthUser, assignment: AssignmentRecord
   }
 
   const programId = programIdFromAssignment(assignment);
+  let enrollment;
   let view;
   try {
+    ({ enrollment } = await progressService.requireEnrollment(user.id, programId, batchId));
     view = await progressService.getComputation(user, programId, batchId);
   } catch (error) {
     if (error instanceof ApiError && error.statusCode === 404) {
@@ -192,6 +194,8 @@ async function catalogForAssignment(user: AuthUser, assignment: AssignmentRecord
       reason: access.reason,
       programId,
       programTitle: view.program.title,
+      batchId: enrollment.batch?.id ?? enrollment.batchId ?? null,
+      batchName: enrollment.batch?.name ?? null,
       location: `${assignment.day.week.title} · ${assignment.day.title}`,
       allowFileUpload: assignment.allowFileUpload,
       allowTextResponse: assignment.allowTextResponse,

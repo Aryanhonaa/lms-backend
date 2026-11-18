@@ -329,12 +329,15 @@ describe("consolidated certificates for linked courses", () => {
     await prisma.user.deleteMany({ where: { email: { in: emails } } });
   });
 
-  async function completeCourse(traineeCookie: string, programId: string, lessonId: string) {
+  async function completeLesson(traineeCookie: string, programId: string, lessonId: string) {
     await request(app).get(`/api/v1/trainee/programs/${programId}/learn`).set("Cookie", traineeCookie);
     const complete = await request(app)
       .post(`/api/v1/trainee/items/LESSON/${lessonId}/complete`)
       .set("Cookie", traineeCookie);
     expect(complete.status).toBe(200);
+  }
+
+  async function reviewCourse(traineeCookie: string, programId: string) {
     const review = await request(app).post("/api/v1/trainee/feedback").set("Cookie", traineeCookie).send({
       targetKind: "COURSE",
       targetId: programId,
@@ -347,22 +350,40 @@ describe("consolidated certificates for linked courses", () => {
   it("issues one certificate only after every linked course is complete", async () => {
     const traineeCookie = await login(familyAccounts.trainee.email);
 
-    await completeCourse(traineeCookie, family.firstProgramId, family.firstLessonId);
+    await completeLesson(traineeCookie, family.firstProgramId, family.firstLessonId);
 
     const afterFirst = await request(app)
       .get(`/api/v1/trainee/programs/${family.firstProgramId}/certificate`)
       .set("Cookie", traineeCookie);
     expect(afterFirst.status).toBe(200);
     expect(afterFirst.body.data.eligible).toBe(false);
+    expect(afterFirst.body.data.pendingReview).toBe(false);
     expect(afterFirst.body.data.certificate).toBeNull();
     expect(
-      afterFirst.body.data.requirements.every((row: { met: boolean }) => row.met),
+      afterFirst.body.data.requirements.some(
+        (row: { key: string; met: boolean }) => row.key === "COURSE_REVIEW" && !row.met,
+      ),
     ).toBe(true);
 
     const listedAfterFirst = await request(app).get("/api/v1/trainee/certificates").set("Cookie", traineeCookie);
     expect(listedAfterFirst.body.data.certificates).toHaveLength(0);
+    expect(listedAfterFirst.body.data.pendingReviews).toHaveLength(0);
 
-    await completeCourse(traineeCookie, family.secondProgramId, family.secondLessonId);
+    await completeLesson(traineeCookie, family.secondProgramId, family.secondLessonId);
+
+    const listedAfterAllLessons = await request(app)
+      .get("/api/v1/trainee/certificates")
+      .set("Cookie", traineeCookie);
+    expect(listedAfterAllLessons.body.data.certificates).toHaveLength(0);
+    expect(listedAfterAllLessons.body.data.pendingReviews).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ programId: family.firstProgramId }),
+        expect.objectContaining({ programId: family.secondProgramId }),
+      ]),
+    );
+
+    await reviewCourse(traineeCookie, family.firstProgramId);
+    await reviewCourse(traineeCookie, family.secondProgramId);
 
     const afterSecond = await request(app)
       .get(`/api/v1/trainee/programs/${family.secondProgramId}/certificate`)

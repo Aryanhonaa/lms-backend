@@ -64,8 +64,9 @@ const databaseUrl =
   (isPrismaGenerate() ? GENERATE_PLACEHOLDER : "");
 
 if (!databaseUrl) {
+  const keys = Object.keys(parsed).join(", ") || "(none)";
   throw new Error(
-    `No database URL in ${envPath ?? path.join(root, ".env")}. Set LMS_DATABASE_URL (Cursor/Prisma treat DATABASE_URL as empty).`,
+    `No database URL in ${envPath ?? path.join(root, ".env")}. Keys found: ${keys}. Set LMS_DATABASE_URL=postgresql://... (non-empty). Mesh/runtime env does not apply to prisma CLI — it must be in this .env file or exported in the shell.`,
   );
 }
 
