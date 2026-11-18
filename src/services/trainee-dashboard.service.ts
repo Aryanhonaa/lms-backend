@@ -84,7 +84,13 @@ export const traineeDashboardService = {
     const { range, start, end } = resolveDashboardRange(rangeInput);
     const now = new Date();
     const enrollments = await progressService.listSummaries(user.id);
-    const primary = enrollments[0] ?? null;
+    const unlocked = enrollments.filter((row) => !row.sequenceLocked);
+    const primary =
+      unlocked.find((row) => row.course.outcome === "PENDING" && row.progress.percent > 0) ??
+      unlocked.find((row) => row.course.outcome === "PENDING") ??
+      unlocked[0] ??
+      enrollments[0] ??
+      null;
 
     const [learningResult, upcomingResult, assignmentsResult, announcementsResult, leaderboardResult, answerReviewsResult] =
       await Promise.all([
