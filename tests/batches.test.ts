@@ -128,7 +128,8 @@ describe("course runs (batches) as independent offerings", () => {
 
     const otherCatalog = await request(app).get("/api/v1/trainer/batch-catalog").set("Cookie", otherTrainerCookie);
     expect(otherCatalog.status).toBe(200);
-    expect(otherCatalog.body.data.programs.some((row: { id: string }) => row.id === programId)).toBe(false);
+    // Catalog lists every approved course so trainers can link them into a batch they own.
+    expect(otherCatalog.body.data.programs.some((row: { id: string }) => row.id === programId)).toBe(true);
 
     const september = await request(app)
       .post(`/api/v1/trainer/programs/${programId}/batches`)

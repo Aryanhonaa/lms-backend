@@ -229,7 +229,7 @@ async function assertActiveTrainer(userId: string | null | undefined) {
   }
 }
 
-async function assertBatchableProgram(programId: string, user?: AuthUser) {
+async function assertBatchableProgram(programId: string) {
   const program = await prisma.program.findUnique({
     where: { id: programId },
     select: { id: true, title: true, status: true, createdByUserId: true },
@@ -239,9 +239,6 @@ async function assertBatchableProgram(programId: string, user?: AuthUser) {
   }
   if (!BATCHABLE_STATUSES.includes(program.status)) {
     throw ApiError.badRequest("Only admin-approved courses can be added to a batch.");
-  }
-  if (user?.role === Role.TRAINER) {
-    await programService.requireTrainerOnProgram(user, programId);
   }
   return program;
 }
@@ -362,7 +359,8 @@ async function syncLinkedCourses(
   }
   const desired = ordered.filter((id) => id !== batch.programId);
   for (const programId of desired) {
-    await assertBatchableProgram(programId, user);
+    // Linked courses only need to be approved. Batch team is granted program access below.
+    await assertBatchableProgram(programId);
   }
 
   const existingByProgram = new Map((batch.linkedBatches ?? []).map((item) => [item.programId, item]));
@@ -479,16 +477,10 @@ export const batchService = {
       throw ApiError.forbidden();
     }
 
-    const programWhere: Prisma.ProgramWhereInput = isProgramReviewer(user.role)
-      ? { status: { in: BATCHABLE_STATUSES } }
-      : {
-          status: { in: BATCHABLE_STATUSES },
-          OR: [{ createdByUserId: user.id }, { trainers: { some: { userId: user.id } } }],
-        };
-
+    // All approved/published courses are linkable into a batch; team members get program access on save.
     const [programs, trainers] = await Promise.all([
       prisma.program.findMany({
-        where: programWhere,
+        where: { status: { in: BATCHABLE_STATUSES } },
         select: {
           id: true,
           title: true,
@@ -517,9 +509,10 @@ export const batchService = {
       orderedProgramIds.unshift(programId);
     }
     const extraIds = orderedProgramIds.filter((id) => id !== programId);
-    await assertBatchableProgram(programId, user);
+    await assertBatchableProgram(programId);
+    await programService.requireTrainerOnProgram(user, programId);
     for (const extraId of extraIds) {
-      await assertBatchableProgram(extraId, user);
+      await assertBatchableProgram(extraId);
     }
     const capacity = input.capacity ?? DEFAULT_BATCH_CAPACITY;
     validateCapacity(capacity);
