@@ -396,6 +396,8 @@ async function syncLinkedCourses(
   );
   let nextOrder = currentMax + 1;
 
+  const teamCollaborators = [...new Set([...collaborators, user.id].filter((id) => id && id !== lead))];
+
   for (const programId of toAdd) {
     const linkedName = await uniqueNameForProgram(programId, batch.name);
     const linked = await programBatchRepository.create({
@@ -410,17 +412,25 @@ async function syncLinkedCourses(
       sortOrder: nextOrder,
     });
     nextOrder += 1;
-    await applyTrainers(programId, linked.id, {
-      salesTrainerId: lead,
-      collaboratorIds: collaborators,
-    });
-    if (members.length > 0) {
-      await enrollmentService.enrollTrainees(
-        user,
-        programId,
-        members.map((row) => row.userId),
-        linked.id,
-      );
+    try {
+      await applyTrainers(programId, linked.id, {
+        salesTrainerId: lead,
+        collaboratorIds: teamCollaborators,
+      });
+      if (members.length > 0) {
+        // Existing batch members must follow onto the new course even if the root batch end date already passed.
+        await enrollmentService.enrollTrainees(
+          user,
+          programId,
+          members.map((row) => row.userId),
+          linked.id,
+          undefined,
+          { allowClosedBatch: true },
+        );
+      }
+    } catch (error) {
+      await prisma.programBatch.delete({ where: { id: linked.id } }).catch(() => undefined);
+      throw error;
     }
   }
 

@@ -210,14 +210,12 @@ export const enrollmentService = {
     traineeIds: string[],
     batchId: string,
     joinedAt?: Date,
+    options?: { allowClosedBatch?: boolean },
   ) {
     if (user.role !== Role.TRAINER) {
       throw ApiError.forbidden("You don't have permission to enroll trainees in this program.");
     }
 
-    if (user.role !== Role.TRAINER) {
-      throw ApiError.forbidden("You don't have permission to enroll trainees in this program.");
-    }
     const program = await prisma.program.findUnique({ where: { id: programId } });
     if (!program) {
       throw ApiError.notFound("Program not found");
@@ -240,7 +238,7 @@ export const enrollmentService = {
     if (!onBatch) {
       await programService.requireTrainerOnProgram(user, programId);
     }
-    if (batch.endDate && batch.endDate.getTime() < Date.now()) {
+    if (!options?.allowClosedBatch && batch.endDate && batch.endDate.getTime() < Date.now()) {
       throw ApiError.badRequest("This batch is closed for new enrollments.");
     }
 
