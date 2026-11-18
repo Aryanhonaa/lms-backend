@@ -28,12 +28,24 @@ export const leaderboardController = {
     sendSuccess(res, await leaderboardService.forTrainee(req.user!, queryString(req, "programId"), queryString(req, "batchId")));
   },
 
+  async traineeFilters(req: Request, res: Response) {
+    sendSuccess(res, await leaderboardService.filtersForTrainee(req.user!));
+  },
+
   async trainer(req: Request, res: Response) {
     sendSuccess(res, await leaderboardService.forTrainer(req.user!, queryString(req, "programId"), queryString(req, "batchId")));
   },
 
+  async trainerFilters(req: Request, res: Response) {
+    sendSuccess(res, await leaderboardService.filtersForTrainer(req.user!));
+  },
+
   async admin(req: Request, res: Response) {
     sendSuccess(res, await leaderboardService.forAdmin(req.user!, queryString(req, "programId"), queryString(req, "batchId")));
+  },
+
+  async adminFilters(req: Request, res: Response) {
+    sendSuccess(res, await leaderboardService.filtersForAdmin(req.user!));
   },
 };
 

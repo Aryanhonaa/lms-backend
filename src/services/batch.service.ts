@@ -704,16 +704,11 @@ export const batchService = {
     if (user.role !== Role.TRAINER) {
       throw ApiError.forbidden();
     }
-    const batch = await requireBatchAccess(user, batchId);
+    const batch = await requireBatchManage(user, batchId);
     const familyIds = [batch.id, ...(batch.linkedBatches ?? []).map((item) => item.id)];
-    const members = await prisma.enrollment.count({
-      where: { batchId: { in: familyIds }, status: { not: EnrollmentStatus.REMOVED } },
-    });
-    if (members > 0) {
-      throw ApiError.conflict("Cannot delete a batch that has enrollments.");
-    }
     await prisma.$transaction([
-      prisma.enrollment.deleteMany({ where: { batchId: { in: familyIds }, status: EnrollmentStatus.REMOVED } }),
+      // Enrollment.batch is Restrict — clear roster (and cascaded attempts/certs) before the batch.
+      prisma.enrollment.deleteMany({ where: { batchId: { in: familyIds } } }),
       prisma.programBatch.deleteMany({ where: { linkedFromBatchId: batch.id } }),
       prisma.programBatch.delete({ where: { id: batch.id } }),
     ]);

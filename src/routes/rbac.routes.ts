@@ -148,7 +148,8 @@ adminRouter.get("/interventions", asyncHandler(interventionController.listFlags)
 adminRouter.get("/requirements", asyncHandler(interventionController.listRequirements));
 adminRouter.get("/requirements/:id", asyncHandler(interventionController.getRequirement));
 adminRouter.get("/calendar", requireRole("SUPER_ADMIN", "ADMIN"), asyncHandler(calendarController.list));
-adminRouter.get("/leaderboard", requireRole("SUPER_ADMIN"), asyncHandler(leaderboardController.admin));
+adminRouter.get("/leaderboard/filters", requireRole("SUPER_ADMIN", "ADMIN"), asyncHandler(leaderboardController.adminFilters));
+adminRouter.get("/leaderboard", requireRole("SUPER_ADMIN", "ADMIN"), asyncHandler(leaderboardController.admin));
 adminRouter.get("/feedback", requireRole("SUPER_ADMIN"), asyncHandler(feedbackController.listAdmin));
 adminRouter.get("/feedback/:id", requireRole("SUPER_ADMIN"), asyncHandler(feedbackController.get));
 adminRouter.patch(
@@ -258,6 +259,7 @@ trainerRouter.post(
   asyncHandler(calendarController.createActivity),
 );
 trainerRouter.delete("/calendar/activities/:activityId", asyncHandler(calendarController.removeActivity));
+trainerRouter.get("/leaderboard/filters", asyncHandler(leaderboardController.trainerFilters));
 trainerRouter.get("/leaderboard", asyncHandler(leaderboardController.trainer));
 trainerRouter.get("/feedback", asyncHandler(feedbackController.listTrainer));
 trainerRouter.get("/feedback/:id", asyncHandler(feedbackController.get));
@@ -339,6 +341,7 @@ traineeRouter.post("/requirements/:id/complete", asyncHandler(interventionContro
 traineeRouter.get("/attendance", asyncHandler(attendanceController.listMine));
 traineeRouter.get("/attendance/:id", asyncHandler(attendanceController.getRecord));
 traineeRouter.get("/calendar", asyncHandler(calendarController.list));
+traineeRouter.get("/leaderboard/filters", asyncHandler(leaderboardController.traineeFilters));
 traineeRouter.get("/leaderboard", asyncHandler(leaderboardController.trainee));
 traineeRouter.get("/achievements", asyncHandler(achievementController.listMine));
 traineeRouter.get("/feedback/options", asyncHandler(feedbackController.options));

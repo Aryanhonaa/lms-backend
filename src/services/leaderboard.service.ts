@@ -3,14 +3,17 @@ import { enrollmentRepository } from "../repositories/enrollment.repository";
 import { programBatchRepository } from "../repositories/program-batch.repository";
 import { programRepository } from "../repositories/program.repository";
 import { enrollmentService } from "./enrollment.service";
+import { loadFamilyRoot } from "./batch-family.service";
 import { programService } from "./program.service";
 import { progressService } from "./progress.service";
 import { quizState, type ProgramTree, type TraineeFacts } from "./unlock.service";
 import { achievementRepository } from "../repositories/engagement.repository";
 import type { AuthUser } from "../types";
+import { orderedBatchCourses } from "../utils/course-sequence";
 import { isExitedEnrollment } from "../utils/enrollment-status";
 import { blendLeaderboardScore, roundScore } from "../utils/leaderboard-score";
 import { ApiError } from "../utils/api-error";
+import { isProgramReviewer } from "../utils/roles";
 
 const QUIZ_KINDS: QuizKind[] = [QuizKind.PRACTICE_QUIZ, QuizKind.WEEKLY_QUIZ];
 const EXAM_KINDS: QuizKind[] = [QuizKind.WEEKLY_EXAM, QuizKind.FINAL_EXAM];
@@ -77,22 +80,34 @@ function publicEntry(row: {
   };
 }
 
+type RootBatch = NonNullable<Awaited<ReturnType<typeof programBatchRepository.findById>>>;
+
+function familyCourses(root: RootBatch) {
+  return orderedBatchCourses({
+    id: root.id,
+    programId: root.programId,
+    sortOrder: root.sortOrder,
+    createdAt: root.createdAt,
+    program: root.program,
+    linkedBatches: root.linkedBatches,
+  });
+}
+
 async function computeBoard(programId: string, batchId: string) {
   const program = await programRepository.findTreeById(programId);
   if (!program) {
     throw ApiError.notFound("Program not found");
   }
 
-  const batch = await programBatchRepository.findById(batchId);
-  if (!batch || batch.programId !== programId) {
+  const member = await programBatchRepository.findById(batchId);
+  if (!member || member.programId !== programId) {
     throw ApiError.notFound("Batch not found");
   }
-  const batchFilter = { id: batch.id, name: batch.name };
 
-  const [enrollments, batches] = await Promise.all([
-    enrollmentRepository.findFactsByProgram(programId, batch.id),
-    programBatchRepository.listForProgram(programId),
-  ]);
+  const root = (await loadFamilyRoot(batchId)) ?? member;
+  const courses = familyCourses(root);
+
+  const enrollments = await enrollmentRepository.findFactsByProgram(programId, member.id);
   const quizzes = collectQuizzes(program);
   const quizItems = quizzes.filter((quiz) => QUIZ_KINDS.includes(quiz.kind));
   const examItems = quizzes.filter((quiz) => EXAM_KINDS.includes(quiz.kind));
@@ -109,8 +124,8 @@ async function computeBoard(programId: string, batchId: string) {
       enrollmentId: enrollment.id,
       userId: enrollment.userId,
       name: enrollment.user.name,
-      batchId: enrollment.batch?.id ?? batch.id,
-      batchName: enrollment.batch?.name ?? batch.name,
+      batchId: enrollment.batch?.id ?? member.id,
+      batchName: enrollment.batch?.name ?? root.name,
       score: blend.score,
       progressPercent: progress,
       quiz,
@@ -145,20 +160,33 @@ async function computeBoard(programId: string, batchId: string) {
   }
 
   if (ranked.length >= 2) {
-    await achievementRepository.ensureCatalog();
-    for (const row of ranked.filter((item) => item.rank === 1)) {
-      await achievementRepository.grant(row.userId, AchievementKey.TOP_PERFORMER, row.enrollmentId);
-    }
+    // Don't block the leaderboard response on badge writes.
+    void achievementRepository.ensureCatalog().then(() =>
+      Promise.all(
+        ranked
+          .filter((item) => item.rank === 1)
+          .map((row) => achievementRepository.grant(row.userId, AchievementKey.TOP_PERFORMER, row.enrollmentId)),
+      ),
+    );
   }
 
   return {
     program: { id: program.id, title: program.title },
-    batch: batchFilter,
-    batches: batches.map((row) => ({
-      id: row.id,
-      name: row.name,
-      memberCount: row._count.enrollments,
+    batch: {
+      id: root.id,
+      name: root.name,
+      memberCount: root._count?.enrollments,
+    },
+    courseBatchId: member.id,
+    courses: courses.map((course) => ({
+      id: course.id,
+      title: course.title,
+      batchId: course.batchId,
+      sequence: course.sequence,
+      label: course.label,
+      isPrimary: course.isPrimary,
     })),
+    batches: [],
     ranked,
   };
 }
@@ -171,6 +199,8 @@ function toPayload(board: Awaited<ReturnType<typeof computeBoard>>, viewerUserId
   return {
     program: board.program,
     batch: board.batch,
+    courseBatchId: board.courseBatchId,
+    courses: board.courses,
     batches: board.batches,
     yourBatch: viewerRow?.batchId ? { id: viewerRow.batchId, name: viewerRow.batchName ?? "Batch" } : null,
     you: mine
@@ -188,20 +218,148 @@ function toPayload(board: Awaited<ReturnType<typeof computeBoard>>, viewerUserId
   };
 }
 
+function matchesFilters(
+  course: { id: string; batchId: string },
+  rootId: string,
+  programId?: string,
+  batchId?: string,
+) {
+  if (programId && course.id !== programId) {
+    return false;
+  }
+  if (!batchId) {
+    return true;
+  }
+  return course.batchId === batchId || rootId === batchId;
+}
+
+function filterOptionsFromRoots(roots: RootBatch[], accessibleProgramIds?: Set<string>) {
+  const unique = new Map(roots.map((row) => [row.id, row]));
+  const batches = [...unique.values()]
+    .map((root) => {
+      const courses = familyCourses(root)
+        .filter((course) => (accessibleProgramIds ? accessibleProgramIds.has(course.id) : true))
+        .map((course) => ({
+          id: course.id,
+          title: course.title,
+          batchId: course.batchId,
+          sequence: course.sequence,
+          label: course.label,
+          isPrimary: course.isPrimary,
+        }));
+      return {
+        id: root.id,
+        name: root.name,
+        courses,
+      };
+    })
+    .filter((batch) => batch.courses.length > 0)
+    .sort((left, right) => left.name.localeCompare(right.name));
+  return { batches };
+}
+
+async function resolveTrainerRoots(userId: string) {
+  const programs = await programService.listForTrainer(userId);
+  const accessible = new Set(programs.map((row) => row.id));
+  const nested = await Promise.all(programs.map((program) => programBatchRepository.listForProgram(program.id)));
+  return { roots: nested.flat(), accessible };
+}
+
+async function resolveAdminRoots(programId?: string) {
+  const programs = programId
+    ? [await programRepository.findById(programId)].filter(Boolean)
+    : (await programRepository.findCatalog()).slice(0, 50);
+  if (programId && programs.length === 0) {
+    throw ApiError.notFound("Program not found");
+  }
+  const nested = await Promise.all(
+    programs.filter(Boolean).map((program) => programBatchRepository.listForProgram(program!.id)),
+  );
+  return nested.flat() as RootBatch[];
+}
+
+async function resolveTraineeRoots(userId: string) {
+  await enrollmentService.ensureVisibleEnrollments(userId);
+  const enrollments = await enrollmentRepository.findByUser(userId);
+  const visible = enrollments.filter((row) => !isExitedEnrollment(row.status) && row.batch);
+  const roots: RootBatch[] = [];
+  const seen = new Set<string>();
+  for (const enrollment of visible) {
+    const root = await loadFamilyRoot(enrollment.batch!.id);
+    if (!root || seen.has(root.id)) {
+      continue;
+    }
+    seen.add(root.id);
+    roots.push(root);
+  }
+  return { roots, enrollments: visible };
+}
+
+async function boardsForRootBatches(
+  roots: RootBatch[],
+  programId?: string,
+  batchId?: string,
+  viewerUserId?: string,
+  accessibleProgramIds?: Set<string>,
+  limit?: number,
+) {
+  const unique = new Map(roots.map((row) => [row.id, row]));
+  const boards = [];
+  for (const root of unique.values()) {
+    const courses = familyCourses(root).filter((course) =>
+      accessibleProgramIds ? accessibleProgramIds.has(course.id) : true,
+    );
+    for (const course of courses) {
+      if (!matchesFilters(course, root.id, programId, batchId)) {
+        continue;
+      }
+      boards.push(toPayload(await computeBoard(course.id, course.batchId), viewerUserId));
+      if (limit != null && boards.length >= limit) {
+        return boards;
+      }
+    }
+  }
+  return boards;
+}
+
 export const leaderboardService = {
+  async filtersForTrainee(user: AuthUser) {
+    if (user.role !== "TRAINEE") {
+      throw ApiError.forbidden();
+    }
+    const { roots } = await resolveTraineeRoots(user.id);
+    return filterOptionsFromRoots(roots);
+  },
+
+  async filtersForTrainer(user: AuthUser) {
+    if (user.role !== "TRAINER") {
+      throw ApiError.forbidden();
+    }
+    const { roots, accessible } = await resolveTrainerRoots(user.id);
+    return filterOptionsFromRoots(roots, accessible);
+  },
+
+  async filtersForAdmin(user: AuthUser) {
+    if (!isProgramReviewer(user.role)) {
+      throw ApiError.forbidden();
+    }
+    const roots = await resolveAdminRoots();
+    return filterOptionsFromRoots(roots);
+  },
+
   async forTrainee(user: AuthUser, programId?: string, batchId?: string) {
     if (user.role !== "TRAINEE") {
       throw ApiError.forbidden();
     }
-    await enrollmentService.ensureVisibleEnrollments(user.id);
-    const enrollments = await enrollmentRepository.findByUser(user.id);
-    let visible = enrollments.filter((row) => !isExitedEnrollment(row.status) && row.batch);
-
+    const { roots, enrollments } = await resolveTraineeRoots(user.id);
+    let visible = enrollments;
     if (programId) {
       visible = visible.filter((row) => row.programId === programId);
     }
     if (batchId) {
-      visible = visible.filter((row) => row.batch?.id === batchId);
+      visible = visible.filter(
+        (row) => row.batch?.id === batchId || row.batch?.linkedFromBatchId === batchId,
+      );
     }
     if (programId && visible.length === 0) {
       throw ApiError.notFound("Enrollment not found");
@@ -210,60 +368,38 @@ export const leaderboardService = {
       throw ApiError.notFound("Batch not found");
     }
 
-    const boards = [];
-    for (const enrollment of visible) {
-      boards.push(toPayload(await computeBoard(enrollment.programId, enrollment.batch!.id), user.id));
-    }
-    return { boards };
+    // One board only — full catalogs come from /leaderboard/filters.
+    return {
+      boards: await boardsForRootBatches(roots, programId, batchId, user.id, undefined, 1),
+    };
   },
 
   async forTrainer(user: AuthUser, programId?: string, batchId?: string) {
     if (user.role !== "TRAINER") {
       throw ApiError.forbidden();
     }
-    const programs = await programService.listForTrainer(user.id);
-    const programIds = programId ? [programId] : programs.map((row) => row.id);
     if (programId) {
       await programService.requireTrainerOnProgram(user, programId);
     }
+    if (!programId || !batchId) {
+      return { boards: [] };
+    }
 
-    const boards = [];
-    for (const id of programIds) {
-      const batches = await programBatchRepository.listForProgram(id);
-      const selected = batchId && programId ? batches.filter((row) => row.id === batchId) : batches;
-      if (batchId && programId && selected.length === 0) {
-        throw ApiError.notFound("Batch not found");
-      }
-      for (const batch of selected) {
-        boards.push(toPayload(await computeBoard(id, batch.id)));
-      }
+    const { roots, accessible } = await resolveTrainerRoots(user.id);
+    const boards = await boardsForRootBatches(roots, programId, batchId, undefined, accessible, 1);
+    if (boards.length === 0) {
+      throw ApiError.notFound("Batch not found");
     }
     return { boards };
   },
 
   async forAdmin(user: AuthUser, programId?: string, batchId?: string) {
-    if (user.role !== "SUPER_ADMIN") {
+    if (!isProgramReviewer(user.role)) {
       throw ApiError.forbidden();
     }
-    if (!programId) {
-      const programs = await programRepository.findCatalog();
-      const boards = [];
-      for (const program of programs.slice(0, 20)) {
-        const batches = await programBatchRepository.listForProgram(program.id);
-        for (const batch of batches) {
-          boards.push(toPayload(await computeBoard(program.id, batch.id)));
-        }
-      }
-      return { boards };
+    if (!programId || !batchId) {
+      return { boards: [] };
     }
-    if (batchId) {
-      return { boards: [toPayload(await computeBoard(programId, batchId))] };
-    }
-    const batches = await programBatchRepository.listForProgram(programId);
-    const boards = [];
-    for (const batch of batches) {
-      boards.push(toPayload(await computeBoard(programId, batch.id)));
-    }
-    return { boards };
+    return { boards: [toPayload(await computeBoard(programId, batchId))] };
   },
 };
